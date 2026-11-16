@@ -1,0 +1,9 @@
+.venv
+data
+runs
+logs
+models
+datasets
+.pytest_cache
+**/__pycache__
+.git

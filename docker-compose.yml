@@ -1,0 +1,27 @@
+services:
+  api:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      AUTOLEARN_ADMIN_KEY: ${AUTOLEARN_ADMIN_KEY:?set a long random platform admin key}
+      AUTOLEARN_LEARN_INTERVAL: "15"
+      AUTOLEARN_LLM_LOG_RETENTION_DAYS: "30"
+    volumes:
+      - autolearn-data:/data
+      - ./models/llm:/models/llm
+    restart: unless-stopped
+
+  # Fine-tunes the LLM from opted-in customer feedback and hot-swaps the API to better versions.
+  llm-learner:
+    build: .
+    command: ["python", "-m", "autolearn.llm.continual", "--data-dir", "/data", "--llm-dir", "/models/llm",
+              "--replay", "/sft", "--interval", "900"]
+    volumes:
+      - autolearn-data:/data
+      - ./models/llm:/models/llm
+      - ./data/llm/sft:/sft:ro
+    restart: unless-stopped
+    depends_on: [api]
+
+volumes:
+  autolearn-data:

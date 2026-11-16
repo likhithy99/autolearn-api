@@ -1,0 +1,16 @@
+# API + AutoML (tabular) service
+fastapi==0.163.1
+uvicorn[standard]==0.54.0
+pydantic==2.14.3
+python-multipart==0.0.33
+scikit-learn==1.9.1
+pandas==3.1.1
+numpy==2.5.5
+joblib==1.6.0
+httpx==0.28.1
+certifi==2026.10.23
+# LLM stack. torch 2.4.1 is pinned because newer wheels crash on macOS 14 MPS;
+# on Linux/NVIDIA install the CUDA build matching your driver (see Dockerfile.gpu).
+torch==2.4.1
+tokenizers==0.23.3
+datasets==5.2.0
