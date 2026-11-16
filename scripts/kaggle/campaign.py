@@ -115,10 +115,12 @@ def main():
     else:
         sys.exit("no Kaggle credentials: create a token at https://www.kaggle.com/settings")
     work = Path(a.work)
-    code, ckpt, kdir = work / "code", work / "ckpt", work / "kernel"
-    for d in (code, ckpt, kdir):
+    code, ckpt, kdir, pdir = work / "code", work / "ckpt", work / "kernel", work / "prep"
+    for d in (code, ckpt, kdir, pdir):
         d.mkdir(parents=True, exist_ok=True)
     code_ref, ckpt_ref, kernel_ref = f"{user}/autolearn-code", f"{user}/autolearn-ckpt", f"{user}/autolearn-train"
+    prep_ref = f"{user}/autolearn-prep"
+    prep_record = work / "prep.json"  # which session the prep kernel's latest run is for
 
     tokens_per_step = a.batch * a.block * a.accum * a.gpus_assumed
     max_steps = math.ceil(parse_count(a.target_tokens) / tokens_per_step)
@@ -141,20 +143,51 @@ def main():
         (ckpt / "state.json").write_text(json.dumps({"session": 0, "stage": "pretrain"}))
         upload_dataset(ckpt, ckpt_ref, "autolearn-ckpt", "init")
 
-    def build_kernel():
+    def embed(script: str, extra: dict | None = None) -> str:
         """Re-embed the current package before every push so code fixes reach the next session."""
         embedded = {str(f.relative_to(ROOT)): base64.b64encode(f.read_bytes()).decode()
                     for f in sorted((ROOT / "autolearn").rglob("*.py")) if "__pycache__" not in f.parts}
-        src = (ROOT / "scripts/kaggle/session.py").read_text()
+        src = (ROOT / "scripts/kaggle" / script).read_text()
         marker = "EMBEDDED = {}  # __EMBEDDED_PACKAGE__"
         assert marker in src
-        (kdir / "session.py").write_text(src.replace(marker, f"EMBEDDED = {embedded!r}"))
+        src = src.replace(marker, f"EMBEDDED = {embedded!r}")
+        for m, v in (extra or {}).items():
+            assert m in src
+            src = src.replace(m, v)
+        return src
+
+    def build_kernel(use_prep: bool):
+        (kdir / "session.py").write_text(embed("session.py"))
         (kdir / "kernel-metadata.json").write_text(json.dumps({
             "id": kernel_ref, "title": "autolearn-train", "code_file": "session.py", "language": "python",
             "kernel_type": "script", "is_private": True, "enable_gpu": True, "enable_internet": True,
             "machine_shape": "NvidiaTeslaT4", "dataset_sources": [code_ref, ckpt_ref],
-            "competition_sources": [], "kernel_sources": []}))
+            "competition_sources": [], "kernel_sources": [prep_ref] if use_prep else []}))
 
+    def push_prep(session: int):
+        """CPU kernel (no GPU quota) that prepares the data for `session` while the current one trains."""
+        (pdir / "prep.py").write_text(embed("prep.py", {"PREP_SESSION = None  # __PREP_SESSION__":
+                                                        f"PREP_SESSION = {session}"}))
+        (pdir / "kernel-metadata.json").write_text(json.dumps({
+            "id": prep_ref, "title": "autolearn-prep", "code_file": "prep.py", "language": "python",
+            "kernel_type": "script", "is_private": True, "enable_gpu": False, "enable_internet": True,
+            "dataset_sources": [code_ref], "competition_sources": [], "kernel_sources": []}))
+        out = sh(["kernels", "push", "-p", str(pdir)], check=False)
+        if "error" in out.lower():
+            log(f"prep push for session {session} failed (the GPU session will prepare its own data):", out[:200])
+            return
+        prep_record.write_text(json.dumps({"session": session, "pushed_at": time.time()}))
+        log(f"prep kernel pushed for session {session}")
+
+    def prep_for(session: int) -> str:
+        """'ready' | 'running' | 'none' for the prep kernel's data for this session."""
+        rec = json.loads(prep_record.read_text()) if prep_record.exists() else {}
+        if rec.get("session") != session:
+            return "none"
+        st, _ = kernel_status(prep_ref)
+        return "ready" if st == "complete" else "running" if st in ("running", "queued") else "none"
+
+    prep_tried: set = set()
     while True:
         state = json.loads((ckpt / "state.json").read_text())
         if state["stage"] == "done":
@@ -163,19 +196,35 @@ def main():
         if st in ("running", "queued"):  # restarted driver: attach to the session already in flight
             log(f"attaching to running session {state['session']}")
         else:
+            use_prep = False
+            if state["stage"] == "pretrain":
+                waited = 0
+                while prep_for(state["session"]) == "running" and waited < 2 * 3600:
+                    time.sleep(120)
+                    waited += 120
+                use_prep = prep_for(state["session"]) == "ready"
             log(f"pushing session {state['session']} (stage={state['stage']}, "
-                f"step={state.get('step', 0)}/{max_steps})")
-            build_kernel()
+                f"step={state.get('step', 0)}/{max_steps}, prepared data: {'yes' if use_prep else 'no'})")
+            build_kernel(use_prep)
             out = sh(["kernels", "push", "-p", str(kdir)], check=False)
             if "error" in out.lower() or "quota" in out.lower():
                 log("push failed (likely weekly GPU quota):", out[:300], f"- retrying in {a.quota_wait // 3600}h")
                 time.sleep(a.quota_wait)
                 continue
             time.sleep(60)
+        running_since = None
         while True:
             st, raw = kernel_status(kernel_ref)
             if st in ("complete", "error", "cancel"):
                 break
+            if st == "running":
+                running_since = running_since or time.time()
+                nxt = state["session"] + 1
+                # once this session has surely mounted its inputs, prepare the next session's data on a CPU kernel
+                if (state["stage"] == "pretrain" and time.time() - running_since > 900 and nxt not in prep_tried
+                        and state.get("step", 0) < max_steps and prep_for(nxt) == "none"):
+                    prep_tried.add(nxt)  # one attempt per session; on failure the GPU session preps itself
+                    push_prep(nxt)
             time.sleep(a.poll)
         tmp = work / "download"
         shutil.rmtree(tmp, ignore_errors=True)

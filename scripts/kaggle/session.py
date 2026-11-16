@@ -85,11 +85,22 @@ remaining_min = lambda: cfg["session_minutes"] - (time.time() - T0) / 60
 if state["stage"] == "pretrain":
     k, per = state["session"], cfg["files_per_session"]
     files = [cfg["files"][(k * per + i) % len(cfg["files"])] for i in range(per)]
-    run(f"python -m autolearn.llm.data pretrain --out /kaggle/temp/data --tokens {cfg['tokens_per_session']} "
-        f"--val-tokens 3M --tokenizer {tok} --dataset {cfg['dataset']} --data-files {','.join(files)}", env,
-        done_file="/kaggle/temp/data/manifest.json")
+    data_dir = "/kaggle/temp/data"
+    for marker in glob.glob("/kaggle/input/**/prep_session.json", recursive=True):  # prepared by prep.py
+        info = json.load(open(marker))
+        d = os.path.dirname(marker)
+        if (info.get("session") == k and info.get("files") == files
+                and info.get("tokens_per_session") == cfg["tokens_per_session"]
+                and os.path.exists(os.path.join(d, "manifest.json"))):
+            data_dir = d
+            print(f"using data prepared by the CPU prep kernel: {d}", flush=True)
+            break
+    if data_dir == "/kaggle/temp/data":
+        run(f"python -m autolearn.llm.data pretrain --out /kaggle/temp/data --tokens {cfg['tokens_per_session']} "
+            f"--val-tokens 3M --tokenizer {tok} --dataset {cfg['dataset']} --data-files {','.join(files)}", env,
+            done_file="/kaggle/temp/data/manifest.json")
     train_min = max(10, remaining_min() - 25)  # leave time to write outputs
-    run(f"{launcher} autolearn.llm.train --stage pretrain --preset {cfg['preset']} --data /kaggle/temp/data "
+    run(f"{launcher} autolearn.llm.train --stage pretrain --preset {cfg['preset']} --data {data_dir} "
         f"--out {WORK} --tokenizer {tok} {'--resume' if state['session'] > 0 else ''} "
         f"--max-steps {cfg['max_steps']} --stop-after-min {train_min:.0f} --batch {cfg['batch']} "
         f"--accum {cfg['accum']} --block {cfg['block']} --lr {cfg['lr']} --warmup {cfg['warmup']} "
