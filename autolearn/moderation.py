@@ -10,6 +10,7 @@ optionally applied to chat input/output per tenant (`moderation` setting: off | 
 from __future__ import annotations
 
 import argparse
+import re
 import json
 import os
 import time
@@ -18,6 +19,13 @@ from pathlib import Path
 
 import joblib
 import numpy as np
+
+# High-precision rules for explicit violent intent, which is rare in the training data (the ML model misses some).
+THREAT_RULES = re.compile(
+    r"\b(i(?:'| a)?m|i(?:'ll| will| am going to| am gonna|'m gonna|'m going to)|we(?:'ll| will| are going to)|"
+    r"gonna|going to)\s+(?:\w+\s+){0,4}(kill|murder|hurt|shoot|stab|beat|strangle|rape|bomb|attack)\s+"
+    r"(you|u|him|her|them|your\s+(?:family|kids|children|wife|husband|mother|father))\b"
+    r"(?!\s+(?:at|in|on)\s)", re.I)  # "beat you at chess" is not a threat
 
 CATEGORIES = ["toxicity", "severe_toxicity", "obscene", "threat", "insult", "identity_attack", "sexual_explicit"]
 
@@ -36,6 +44,9 @@ class Moderator:
         for i in range(len(texts)):
             scores = {c: round(float(probs[c][i]), 5) for c in self.models}
             cats = {c: bool(scores[c] >= self.thresholds[c]) for c in self.models}
+            if THREAT_RULES.search(texts[i] or ""):
+                scores["threat"] = max(scores.get("threat", 0.0), 0.99)
+                cats["threat"] = True
             out.append({"flagged": any(cats.values()), "categories": cats, "category_scores": scores})
         return out
 

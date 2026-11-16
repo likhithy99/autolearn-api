@@ -34,10 +34,10 @@ class TokenLoader:
     """Samples random training windows from memory-mapped token shards (constant memory at any scale)."""
 
     def __init__(self, data_dir: str, split: str, block: int, batch: int, device, seed: int = 0):
-        d = Path(data_dir)
-        self.files = sorted(d.glob(f"{split}_*.bin"))
+        dirs = [Path(x) for x in str(data_dir).split(",") if x]  # several shard dirs may be combined
+        self.files = sorted(f for d in dirs for f in d.glob(f"{split}_*.bin"))
         if not self.files:
-            raise FileNotFoundError(f"no {split}_*.bin shards in {d}")
+            raise FileNotFoundError(f"no {split}_*.bin shards in {data_dir}")
         self.tokens = [np.memmap(f, dtype=np.uint16, mode="r") for f in self.files]
         self.masks = [np.memmap(f.with_suffix(".mask"), dtype=np.uint8, mode="r")
                       if f.with_suffix(".mask").exists() else None for f in self.files]
@@ -138,7 +138,7 @@ def load_model(path, device="cpu") -> tuple[GPT, dict]:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage", choices=["pretrain", "sft"], default="pretrain")
-    ap.add_argument("--data", required=True)
+    ap.add_argument("--data", required=True, help="shard dir, or several comma-separated dirs")
     ap.add_argument("--out", required=True)
     ap.add_argument("--preset", default="micro")
     ap.add_argument("--tokenizer", default=None, help="defaults to <data>/tokenizer.json or the manifest's")
@@ -181,8 +181,10 @@ def main():
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    data_manifest = json.loads((Path(a.data) / "manifest.json").read_text())
-    tok_path = a.tokenizer or data_manifest.get("tokenizer") or str(Path(a.data) / "tokenizer.json")
+    first_dir = Path(a.data.split(",")[0])
+    mf = first_dir / "manifest.json"  # absent while a data job is still writing shards
+    data_manifest = json.loads(mf.read_text()) if mf.exists() else {}
+    tok_path = a.tokenizer or data_manifest.get("tokenizer") or str(first_dir / "tokenizer.json")
     tok = Tok(tok_path)
 
     # model
