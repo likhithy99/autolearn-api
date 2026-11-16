@@ -85,6 +85,28 @@ class Stripe:
         return self._req("POST", "/billing_portal/sessions", {"customer": customer_id, "return_url": return_url})
 
 
+LANDING_FEATURES = """<div class="features">
+<div class="feat"><b>Drop-in OpenAI compatible</b><span>Use the official OpenAI SDKs: change the base URL and key.
+Chat, streaming, function calling, JSON output, embeddings.</span></div>
+<div class="feat"><b>A model that learns your business</b><span>Upload example conversations and give
+feedback: your own custom model trains itself and goes live only when it measurably improves.</span></div>
+<div class="feat"><b>Answers from your documents</b><span>Upload policies, manuals and FAQs. Answers come
+with citations, using search that understands meaning, not just keywords.</span></div>
+<div class="feat"><b>Guaranteed-valid JSON</b><span>Extract structured data from emails, forms and tickets.
+Output is constrained to valid JSON, so there are no parsing failures.</span></div>
+<div class="feat"><b>Self-retraining predictions</b><span>Churn, risk or demand models from your CSVs. The
+service watches accuracy and data drift and retrains itself.</span></div>
+<div class="feat"><b>Private by design</b><span>Your data trains only your models, and only if you choose.
+Moderation, audit log and per-key access control included.</span></div>
+</div>
+<pre>from openai import OpenAI
+client = OpenAI(base_url="https://YOUR-DOMAIN/v1", api_key="al_cli_...")
+r = client.chat.completions.create(model="autolearn-pro",
+        messages=[{"role": "user", "content": "Can I return sale items?"}],
+        extra_body={"knowledge_base": "policies"})      # answers from your own documents
+print(r.choices[0].message.content)</pre>"""
+
+
 def register_billing_routes(app, settings, db, new_key, tenant_admin):
     stripe = Stripe(settings.stripe_secret_key) if settings.stripe_secret_key else None
     prices = settings.stripe_prices or {}
@@ -131,7 +153,8 @@ def register_billing_routes(app, settings, db, new_key, tenant_admin):
             <li>{fmt(lim.get('llm_tokens_per_month'))} LLM tokens / month</li>
             <li>{fmt(lim['max_projects'])} projects</li><li>{fmt(lim['max_rows'])} stored rows</li>
             <li>{lim['rate_limit_per_min']:,} requests / min per key</li>
-            <li>{'Self-training models' if lim['self_training'] else 'Standard retraining'}</li></ul>{cta}</div>""")
+            <li>{'Custom models trained on your data' if lim['self_training'] else 'Standard models'}</li>
+            <li>{'Self-retraining prediction models' if lim['self_training'] else 'Standard retraining'}</li></ul>{cta}</div>""")
         return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>AutoLearn API</title><style>
 :root{{--bg:#fafafa;--fg:#111;--card:#fff;--muted:#666;--accent:#2952e3;--line:#e5e5e5}}
@@ -143,9 +166,16 @@ main{{max-width:1000px;margin:0 auto;padding:48px 16px}}h1{{font-size:2rem;margi
 .card h2{{margin:0}}.price{{font-size:1.6rem;font-weight:600;margin:8px 0}}ul{{padding-left:18px;color:var(--muted)}}
 .btn{{display:inline-block;background:var(--accent);color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none}}
 .btn.ghost{{background:transparent;color:var(--accent);border:1px solid var(--accent)}}.muted{{color:var(--muted)}}
+.features{{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin:0 0 40px}}
+.feat{{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--card)}}
+.feat b{{display:block;margin-bottom:4px}}.feat span{{color:var(--muted);font-size:.93rem}}
+pre{{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;overflow-x:auto;
+font-size:.85rem;margin:0 0 40px}}h3{{margin:0 0 12px}}
 </style></head><body><main><h1>AutoLearn API</h1>
-<p class="sub">Self-improving machine learning and language models over a simple API.
-<a href="/docs">API docs</a></p><div class="grid">{''.join(cards)}</div></main></body></html>"""
+<p class="sub">Language models, embeddings and predictions that learn your business, behind one
+OpenAI-compatible API. <a href="/docs">API reference</a> · <a href="/dashboard">Customer console</a></p>
+{LANDING_FEATURES}
+<h3>Pricing</h3><div class="grid">{''.join(cards)}</div></main></body></html>"""
 
     # ------------------------------------------------------------- checkout --
     @app.get("/signup", include_in_schema=False)
