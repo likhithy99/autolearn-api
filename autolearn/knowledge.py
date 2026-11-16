@@ -107,6 +107,10 @@ class Knowledge:
         return self.db.q("SELECT doc_id AS id, title, chars, chunks, created_at FROM kb_documents "
                          "WHERE tenant=? AND kb=? ORDER BY created_at", (tenant, kb))
 
+    def list_kbs(self, tenant):
+        return self.db.q("SELECT kb AS name, COUNT(*) documents, SUM(chunks) chunks, MAX(created_at) updated_at "
+                         "FROM kb_documents WHERE tenant=? GROUP BY kb ORDER BY kb", (tenant,))
+
     def chunk_count(self, tenant):
         return self.db.one("SELECT COALESCE(SUM(chunks),0) n FROM kb_documents WHERE tenant=?", (tenant,))["n"]
 
@@ -149,6 +153,10 @@ def register_knowledge_routes(app, db, tenant_any, tenant_admin):
     def check_name(kb):
         if not validate_project_name(kb):
             raise HTTPException(422, f"knowledge base name must match {PROJECT_NAME_RE}")
+
+    @app.get("/v1/knowledge", tags=["knowledge"])
+    def list_kbs(p=Depends(tenant_any)):
+        return kbs.list_kbs(p.tenant)
 
     @app.post("/v1/knowledge/{kb}/documents", tags=["knowledge"], status_code=201)
     def add_docs(kb: str, body: DocsIn, p=Depends(tenant_admin)):

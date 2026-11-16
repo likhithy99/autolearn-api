@@ -4,6 +4,9 @@
     al = AutoLearn("https://api.example.com", api_key="al_cli_...")
     out = al.predict("churn", {"tenure": 3, "plan": "basic"})
     al.feedback("churn", out["predictions"][0]["prediction_id"], actual="yes")
+
+    reply = al.chat("What is our refund policy?", knowledge_base="policies")
+    al.rate(reply["id"], -1, correction="Enterprise refunds are available within 60 days.")
 """
 
 from __future__ import annotations
@@ -106,6 +109,31 @@ class AutoLearn:
         items = ([{"prediction_id": prediction_id, "actual": actual}] if isinstance(prediction_id, str)
                  else [{"prediction_id": p, "actual": a} for p, a in prediction_id])
         return self._req("POST", f"/v1/projects/{name}/feedback", json={"items": items})
+
+    # LLM (OpenAI-compatible; the official `openai` SDK also works with base_url=<host>/v1)
+    def chat(self, messages: list[dict] | str, knowledge_base: str | None = None, **params):
+        if isinstance(messages, str):
+            messages = [{"role": "user", "content": messages}]
+        body = {"messages": messages, **params}
+        if knowledge_base:
+            body["knowledge_base"] = knowledge_base
+        return self._req("POST", "/v1/chat/completions", json=body)
+
+    def rate(self, completion_id: str, rating: int, correction: str | None = None):
+        """Thumbs up (+1) / down (-1), optionally with the ideal answer; drives continual learning."""
+        return self._req("POST", "/v1/feedback", json={"completion_id": completion_id, "rating": rating,
+                                                       "correction": correction})
+
+    # knowledge bases (RAG)
+    def add_documents(self, kb: str, documents: list[dict]):
+        """documents: [{"id": optional, "title": optional, "text": "..."}]"""
+        return self._req("POST", f"/v1/knowledge/{kb}/documents", json={"documents": documents})
+
+    def search(self, kb: str, query: str, top_k: int = 5):
+        return self._req("POST", f"/v1/knowledge/{kb}/search", json={"query": query, "top_k": top_k})["results"]
+
+    def delete_document(self, kb: str, doc_id: str):
+        return self._req("DELETE", f"/v1/knowledge/{kb}/documents/{doc_id}")
 
     # monitoring
     def monitor(self, name: str):

@@ -99,7 +99,8 @@ class EngineHolder:
             return self._engine
 
 
-def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, platform, knowledge=None):
+def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, platform, knowledge=None,
+                        moderate=None):
     holder = EngineHolder(settings.llm_dir, settings.llm_device)
     app.state.llm = holder
 
@@ -139,9 +140,18 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
                     text += ev["delta"]
                 else:
                     final = ev
+            finish = final["finish_reason"]
+            if moderate and text:
+                try:
+                    out_mod = moderate(p.tenant, [text], "output")
+                except HTTPException:  # tenant blocks flagged output: withhold it
+                    out_mod = {"flagged": True, "where": "output", "blocked": True}
+                    text, finish = "", "content_filter"
+                if out_mod:
+                    extra = {**extra, "moderation": {**extra.get("moderation", {}), "output": out_mod}}
             usage = record(p, cid, engine, kind, request_payload, text, final)
             metrics.observe("autolearn_llm_request_seconds", time.perf_counter() - t0)
-            return {**full_builder(cid, created, engine.version, text, final["finish_reason"], usage), **extra}
+            return {**full_builder(cid, created, engine.version, text, finish, usage), **extra}
 
         include_usage = bool((req.stream_options or {}).get("include_usage"))
 
@@ -185,6 +195,12 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
         messages = [{"role": "system" if m.role == "developer" else m.role, "content": m.content}
                     for m in req.messages if m.role != "tool"]
         extra = {}
+        if moderate:
+            last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), None)
+            if isinstance(last_user, str) and last_user:
+                in_mod = moderate(p.tenant, [last_user], "input")  # raises 400 in block mode
+                if in_mod:
+                    extra["moderation"] = {"input": in_mod}
         if req.knowledge_base:
             if knowledge is None:
                 raise HTTPException(503, "knowledge bases are not enabled")
@@ -226,7 +242,13 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
             return {"id": cid, "object": "text_completion", "created": created, "model": f"{MODEL_ID}:{ver}",
                     "choices": [{"index": 0, "text": text, "finish_reason": finish}], "usage": usage}
 
-        return run(p, "completion", req, lambda e, kw: e.complete_stream(req.prompt, **kw), req.prompt, chunk, full)
+        extra = {}
+        if moderate:
+            in_mod = moderate(p.tenant, [req.prompt], "input")
+            if in_mod:
+                extra["moderation"] = {"input": in_mod}
+        return run(p, "completion", req, lambda e, kw: e.complete_stream(req.prompt, **kw), req.prompt, chunk, full,
+                   extra)
 
     @app.post("/v1/feedback", tags=["llm"])
     def llm_feedback(body: LLMFeedbackIn, p=Depends(tenant_any)):

@@ -187,3 +187,39 @@ def test_knowledge_base_rag(ctx):
     assert c.post("/v1/knowledge/policies/search", headers=h2, json={"query": "refund"}).json()["results"] == []
     assert c.delete("/v1/knowledge/policies/documents/refunds", headers=h).status_code == 200
     assert [d["id"] for d in c.get("/v1/knowledge/policies/documents", headers=h).json()] == ["support"]
+
+
+@pytest.fixture
+def tiny_moderator(tmp_path, monkeypatch):
+    import joblib
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+    texts = ["you are an idiot and I hate you", "stupid worthless idiot", "I will hurt you idiot",
+             "have a lovely day", "thanks for the help", "the weather is nice today"] * 10
+    y = [1, 1, 1, 0, 0, 0] * 10
+    vec = TfidfVectorizer().fit(texts)
+    m = LogisticRegression().fit(vec.transform(texts), y)
+    joblib.dump({"vectorizer": vec, "models": {"toxicity": m}, "thresholds": {"toxicity": 0.5}},
+                tmp_path / "model.joblib")
+    monkeypatch.setenv("AUTOLEARN_MODERATION_DIR", str(tmp_path))
+
+
+def test_moderation_endpoint_and_chat_modes(tiny_moderator, tmp_path, llm_dir):
+    s = Settings(data_dir=tmp_path / "d", admin_key=ADMIN, learn_interval=3600, start_learner=False,
+                 llm_dir=llm_dir / "registry", llm_device="cpu")
+    with TestClient(create_app(s)) as c:
+        r = c.post("/v1/admin/tenants", json={"name": "M", "plan": "pro"}, headers={"X-API-Key": ADMIN}).json()
+        h = {"X-API-Key": r["admin_key"]["api_key"]}
+        res = c.post("/v1/moderations", headers=h, json={"input": ["you stupid idiot", "have a nice day"]}).json()
+        assert res["results"][0]["flagged"] is True and res["results"][1]["flagged"] is False
+        bad = {"messages": [{"role": "user", "content": "you worthless idiot"}], "max_tokens": 4}
+        assert "moderation" not in c.post("/v1/chat/completions", headers=h, json=bad).json()  # default off
+        c.put("/v1/settings/moderation", headers=h, json={"moderation": "flag"})
+        r = c.post("/v1/chat/completions", headers=h, json=bad).json()
+        assert r["moderation"]["input"]["flagged"] is True
+        c.put("/v1/settings/moderation", headers=h, json={"moderation": "block"})
+        r = c.post("/v1/chat/completions", headers=h, json=bad)
+        assert r.status_code == 400 and r.json()["detail"]["error"] == "content_policy_violation"
+        ok = {"messages": [{"role": "user", "content": "thanks for the help"}], "max_tokens": 4}
+        assert c.post("/v1/chat/completions", headers=h, json=ok).status_code == 200
+        assert c.put("/v1/settings/moderation", headers=h, json={"moderation": "bogus"}).status_code == 422

@@ -263,6 +263,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"accepted": len(labeled), "skipped_without_label": len(rows) - len(labeled),
                 "note": "The learner will train/retrain automatically; POST /train to force it now."}
 
+    # ----------------------------------------------------------- dashboard --
+    from fastapi.responses import FileResponse
+    from pathlib import Path as _P
+    _dash = _P(__file__).parent / "static" / "dashboard.html"
+
+    @app.get("/dashboard", include_in_schema=False)
+    def dashboard():
+        return FileResponse(_dash, media_type="text/html")
+
     # ----------------------------------------------------------- operational --
     @app.get("/health", tags=["ops"])
     def health():
@@ -534,7 +543,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_billing_routes(app, settings, db, new_key, tenant_admin)
     from .knowledge import register_knowledge_routes
     knowledge = register_knowledge_routes(app, db, tenant_any, tenant_admin)
+    from .moderation import register_moderation_routes
+    moderate = register_moderation_routes(app, settings, db, tenant_any, tenant_admin)
     from .llm.routes import register_llm_routes
-    register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, platform, knowledge)
+    register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, platform, knowledge, moderate)
     return app
 

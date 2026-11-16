@@ -252,3 +252,12 @@ def test_delete_project_erases_everything(ctx):
     assert ctx.client.delete("/v1/projects/churn", headers=h).status_code == 200
     assert ctx.client.get("/v1/projects/churn", headers=h).status_code == 404
     assert ctx.db.q("SELECT COUNT(*) n FROM samples")[0]["n"] == 0
+
+
+def test_dashboard_and_kb_listing(ctx):
+    r = ctx.client.get("/dashboard")
+    assert r.status_code == 200 and "AutoLearn Console" in r.text
+    _, h = ctx.tenant()
+    assert ctx.client.get("/v1/knowledge", headers=h).json() == []
+    ctx.client.post("/v1/knowledge/faq/documents", headers=h, json={"documents": [{"text": "Hello world doc."}]})
+    assert ctx.client.get("/v1/knowledge", headers=h).json()[0]["name"] == "faq"

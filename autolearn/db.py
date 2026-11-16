@@ -159,7 +159,7 @@ class DB:
             cols = {r[1] for r in self.conn.execute("PRAGMA table_info(tenants)")}
             if "train_opt_in" not in cols:  # migration: customers must opt in to training on their data
                 self.conn.execute("ALTER TABLE tenants ADD COLUMN train_opt_in INTEGER NOT NULL DEFAULT 0")
-            for col in ("email", "stripe_customer_id", "stripe_subscription_id"):
+            for col in ("email", "stripe_customer_id", "stripe_subscription_id", "moderation"):
                 if col not in cols:
                     self.conn.execute(f"ALTER TABLE tenants ADD COLUMN {col} TEXT")
 

@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoLearn Console</title>
+<style>
+:root{--bg:#f7f7f8;--fg:#141414;--muted:#6b6b6b;--card:#fff;--line:#e4e4e7;--accent:#2952e3;--ok:#16794c;--warn:#b25e09;--bad:#b42318;--track:#ececf0}
+@media (prefers-color-scheme:dark){:root{--bg:#0f0f11;--fg:#ececec;--muted:#9a9aa0;--card:#18181b;--line:#2a2a2f;--accent:#7c9cff;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--track:#26262b}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--fg)}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line);background:var(--card)}
+header h1{font-size:17px;margin:0}main{max-width:1100px;margin:0 auto;padding:20px 16px}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
+.card h2{font-size:15px;margin:0 0 12px}.muted{color:var(--muted)}.small{font-size:13px}
+button,.btn{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);padding:7px 12px;border-radius:8px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button:disabled{opacity:.5;cursor:default}
+input,select,textarea{font:inherit;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
+textarea{min-height:70px;resize:vertical}.row{display:flex;gap:8px;align-items:center}.row>*{flex:1}.row>button{flex:0 0 auto}
+.meter{margin:10px 0}.meter .lbl{display:flex;justify-content:space-between;font-size:13px}
+.bar{height:8px;background:var(--track);border-radius:4px;overflow:hidden}.bar>i{display:block;height:100%;background:var(--accent)}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;padding:6px 4px;border-bottom:1px solid var(--line);vertical-align:top}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;border:1px solid var(--line)}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+pre{white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;margin:8px 0 0;font-size:13px}
+#login{max-width:440px;margin:12vh auto}.hidden{display:none}.scroll{overflow-x:auto}
+</style>
+</head>
+<body>
+<header><h1>AutoLearn Console</h1><div class="row" style="flex:0 0 auto"><span id="who" class="muted small"></span><button id="logout" class="hidden">Sign out</button></div></header>
+<main>
+  <div id="login" class="card">
+    <h2>Sign in with your API key</h2>
+    <p class="muted small">Your key stays in this browser tab only and is sent directly to this API.</p>
+    <form id="loginForm"><input id="key" type="password" placeholder="al_adm_… or al_cli_…" autocomplete="off" required>
+    <div style="margin-top:10px"><button class="primary" type="submit">Sign in</button></div></form>
+    <p id="loginErr" class="bad small"></p>
+  </div>
+
+  <div id="app" class="hidden">
+    <div class="grid">
+      <section class="card"><h2>Plan &amp; usage this month</h2><div id="usage"></div>
+        <div class="row" style="margin-top:12px"><button id="portal">Manage billing</button><span></span></div></section>
+      <section class="card"><h2>Chat playground</h2>
+        <div class="row"><select id="kbSel"><option value="">No knowledge base</option></select></div>
+        <textarea id="prompt" style="margin-top:8px" placeholder="Ask something…"></textarea>
+        <div class="row" style="margin-top:8px"><button class="primary" id="send">Send</button><span class="muted small" id="chatMeta"></span></div>
+        <pre id="answer" class="hidden"></pre>
+        <div id="rateRow" class="row hidden small" style="margin-top:6px"><button id="up">👍 Good</button><button id="down">👎 Bad</button><span id="rated" class="muted"></span></div>
+      </section>
+    </div>
+    <div class="grid" style="margin-top:16px">
+      <section class="card"><h2>Prediction projects</h2><div class="scroll"><table id="projects"></table></div></section>
+      <section class="card"><h2>Knowledge bases</h2><div class="scroll"><table id="kbs"></table></div></section>
+    </div>
+    <section class="card" style="margin-top:16px" id="keysCard"><h2>API keys</h2>
+      <div class="row"><input id="keyName" placeholder="Key name, e.g. production app"><select id="keyRole" style="max-width:130px"><option value="client">client</option><option value="admin">admin</option></select><button id="newKey">Create key</button></div>
+      <pre id="newKeyOut" class="hidden"></pre>
+      <div class="scroll" style="margin-top:10px"><table id="keys"></table></div></section>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let KEY = null, ME = null, lastCompletion = null;
+try { KEY = sessionStorage.getItem("al_key"); } catch (e) {}
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {...opts, headers: {"X-API-Key": KEY, "Content-Type": "application/json", ...(opts.headers || {})}});
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail ? (typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail)) : r.statusText);
+  return body;
+}
+function el(tag, text, cls) { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; }
+function fmt(n) { return n === null || n === undefined ? "∞" : Number(n).toLocaleString(); }
+function table(id, head, rows) {
+  const t = $(id); t.replaceChildren();
+  const tr = el("tr"); head.forEach(h => tr.appendChild(el("th", h))); t.appendChild(tr);
+  if (!rows.length) { const r = el("tr"); const td = el("td", "Nothing yet", "muted"); td.colSpan = head.length; r.appendChild(td); t.appendChild(r); return; }
+  rows.forEach(cells => { const r = el("tr"); cells.forEach(c => { const td = el("td"); if (c instanceof Node) td.appendChild(c); else td.textContent = c; r.appendChild(td); }); t.appendChild(r); });
+}
+function meter(label, used, limit) {
+  const d = el("div", undefined, "meter"), l = el("div", undefined, "lbl");
+  l.append(el("span", label), el("span", `${fmt(used)} / ${fmt(limit)}`, "muted"));
+  const b = el("div", undefined, "bar"), i = el("i");
+  i.style.width = limit ? Math.min(100, 100 * used / limit) + "%" : "2%";
+  b.appendChild(i); d.append(l, b); return d;
+}
+
+async function load() {
+  ME = await api("/v1/me");
+  $("who").textContent = `${ME.name} · ${ME.plan} · ${ME.role}`;
+  const u = ME.usage_this_month, L = ME.limits;
+  $("usage").replaceChildren(
+    meter("Predictions", u.predictions || 0, L.predictions_per_month),
+    meter("LLM tokens", u.llm_tokens || 0, L.llm_tokens_per_month),
+    meter("Projects", ME.projects, L.max_projects),
+    meter("Stored rows", ME.stored_rows, L.max_rows));
+  const isAdmin = ME.role === "admin";
+  $("keysCard").classList.toggle("hidden", !isAdmin);
+  $("portal").classList.toggle("hidden", !isAdmin);
+
+  const projects = await api("/v1/projects");
+  table("projects", ["Project", "Task", "Status", "Model", "Score"], projects.map(p => {
+    const s = el("span", p.status, "tag " + (p.status === "ready" ? "ok" : p.status === "training" ? "warn" : "muted"));
+    const m = p.champion ? `v${p.champion.version} ${p.champion.algorithm}` : "—";
+    const tm = p.champion ? p.champion.test_metrics : null;
+    const score = tm ? (tm.accuracy !== undefined ? `acc ${tm.accuracy.toFixed(3)}` : `R² ${(tm.r2 ?? 0).toFixed(3)}`) : "—";
+    return [p.name, p.task, s, m, score];
+  }));
+
+  const kbs = await api("/v1/knowledge");
+  table("kbs", ["Knowledge base", "Documents", "Chunks"], kbs.map(k => [k.name, fmt(k.documents), fmt(k.chunks)]));
+  const sel = $("kbSel"); sel.replaceChildren(el("option", "No knowledge base"));
+  sel.firstChild.value = "";
+  kbs.forEach(k => { const o = el("option", k.name); o.value = k.name; sel.appendChild(o); });
+
+  if (isAdmin) {
+    const keys = await api("/v1/keys");
+    table("keys", ["Name", "Prefix", "Role", "Last used", ""], keys.map(k => {
+      const b = el("button", k.revoked ? "Revoked" : "Revoke"); b.disabled = k.revoked || k.id === ME.key_id;
+      b.onclick = async () => { if (!confirm(`Revoke key "${k.name}"? Apps using it will stop working.`)) return;
+        try { await api(`/v1/keys/${k.id}`, {method: "DELETE"}); load(); } catch (e) { alert(e.message); } };
+      return [k.name, k.prefix + "…", k.role, k.last_used_at ? new Date(k.last_used_at * 1000).toLocaleString() : "never", b];
+    }));
+  }
+}
+
+$("loginForm").onsubmit = async (e) => {
+  e.preventDefault(); KEY = $("key").value.trim(); $("loginErr").textContent = "";
+  try { await load(); try { sessionStorage.setItem("al_key", KEY); } catch (e) {} show(true); }
+  catch (err) { $("loginErr").textContent = err.message; KEY = null; }
+};
+$("logout").onclick = () => { try { sessionStorage.removeItem("al_key"); } catch (e) {} KEY = null; show(false); };
+function show(on) { $("login").classList.toggle("hidden", on); $("app").classList.toggle("hidden", !on); $("logout").classList.toggle("hidden", !on); if (!on) $("who").textContent = ""; }
+
+$("newKey").onclick = async () => {
+  try { const k = await api("/v1/keys", {method: "POST", body: JSON.stringify({name: $("keyName").value || "unnamed", role: $("keyRole").value})});
+    $("newKeyOut").textContent = `New ${k.role} key (copy it now, it won't be shown again):\n${k.api_key}`;
+    $("newKeyOut").classList.remove("hidden"); $("keyName").value = ""; load(); }
+  catch (e) { alert(e.message); }
+};
+$("portal").onclick = async () => { try { location.href = (await api("/v1/billing/portal", {method: "POST"})).url; } catch (e) { alert(e.message); } };
+
+$("send").onclick = async () => {
+  const q = $("prompt").value.trim(); if (!q) return;
+  $("send").disabled = true; $("answer").classList.remove("hidden"); $("answer").textContent = "…"; $("rateRow").classList.add("hidden"); $("rated").textContent = "";
+  try {
+    const body = {messages: [{role: "user", content: q}], max_tokens: 200};
+    if ($("kbSel").value) body.knowledge_base = $("kbSel").value;
+    const r = await api("/v1/chat/completions", {method: "POST", body: JSON.stringify(body)});
+    lastCompletion = r.id;
+    let text = r.choices[0].message.content || "(empty)";
+    if (r.citations && r.citations.length) text += "\n\nSources:\n" + r.citations.map((c, i) => `[${i + 1}] ${c.title || c.document_id}`).join("\n");
+    $("answer").textContent = text;
+    $("chatMeta").textContent = `${r.model} · ${r.usage.total_tokens} tokens`;
+    $("rateRow").classList.remove("hidden");
+  } catch (e) { $("answer").textContent = "Error: " + e.message; }
+  $("send").disabled = false;
+};
+async function rate(v) {
+  let correction = null;
+  if (v < 0) correction = prompt("Optional: what should the answer have been?") || null;
+  try { const r = await api("/v1/feedback", {method: "POST", body: JSON.stringify({completion_id: lastCompletion, rating: v, correction})});
+    $("rated").textContent = r.used_for_training ? "Thanks, the model will learn from this." : "Thanks, feedback saved."; }
+  catch (e) { $("rated").textContent = e.message; }
+}
+$("up").onclick = () => rate(1); $("down").onclick = () => rate(-1);
+
+if (KEY) load().then(() => show(true)).catch(() => show(false));
+</script>
+</body>
+</html>
