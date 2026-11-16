@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -247,3 +248,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # Stopping a streamed dataset early leaves the HF/fsspec background download threads alive, which blocks
+    # interpreter shutdown forever (seen on Kaggle and macOS). All outputs are written and closed by now.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

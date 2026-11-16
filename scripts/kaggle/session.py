@@ -25,9 +25,23 @@ def find(name):
     return hits[0] if hits else None
 
 
-def run(cmd, env=None):
+def run(cmd, env=None, done_file=None):
+    """Run a command; if done_file is given, also treat its appearance as completion (guards against a child
+    that finished its work but hangs on exit), killing the child after a short grace period."""
     print(f"$ {cmd}", flush=True)
-    subprocess.run(cmd, shell=True, check=True, env=env)
+    p = subprocess.Popen(cmd, shell=True, env=env)
+    seen = None
+    while p.poll() is None:
+        time.sleep(10)
+        if done_file and os.path.exists(done_file):
+            seen = seen or time.time()
+            if time.time() - seen > 60:
+                print(f"{done_file} written but process still alive; killing it", flush=True)
+                p.kill()
+                p.wait()
+                return
+    if p.returncode != 0:
+        raise subprocess.CalledProcessError(p.returncode, cmd)
 
 
 campaign_path = find("campaign.json")
@@ -71,7 +85,8 @@ if state["stage"] == "pretrain":
     k, per = state["session"], cfg["files_per_session"]
     files = [cfg["files"][(k * per + i) % len(cfg["files"])] for i in range(per)]
     run(f"python -m autolearn.llm.data pretrain --out /kaggle/temp/data --tokens {cfg['tokens_per_session']} "
-        f"--val-tokens 3M --tokenizer {tok} --dataset {cfg['dataset']} --data-files {','.join(files)}", env)
+        f"--val-tokens 3M --tokenizer {tok} --dataset {cfg['dataset']} --data-files {','.join(files)}", env,
+        done_file="/kaggle/temp/data/manifest.json")
     train_min = max(10, remaining_min() - 25)  # leave time to write outputs
     run(f"{launcher} autolearn.llm.train --stage pretrain --preset {cfg['preset']} --data /kaggle/temp/data "
         f"--out {WORK} --tokenizer {tok} {'--resume' if state['session'] > 0 else ''} "
@@ -84,7 +99,8 @@ if state["stage"] == "pretrain":
         state["stage"] = "sft"
 elif state["stage"] == "sft":
     run(f"python -m autolearn.llm.data sft --out /kaggle/temp/sft --tokenizer {tok} "
-        f"--max-conversations {cfg['sft_conversations']} --max-len {cfg['block']}", env)
+        f"--max-conversations {cfg['sft_conversations']} --max-len {cfg['block']}", env,
+        done_file="/kaggle/temp/sft/manifest.json")
     train_min = max(10, remaining_min() - 25)
     run(f"{launcher} autolearn.llm.train --stage sft --init {WORK}/best.pt --data /kaggle/temp/sft "
         f"--out /kaggle/temp/sft_run --tokenizer {tok} --time-budget-min {train_min:.0f} --batch {cfg['batch']} "
