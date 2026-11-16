@@ -223,3 +223,19 @@ def test_moderation_endpoint_and_chat_modes(tiny_moderator, tmp_path, llm_dir):
         ok = {"messages": [{"role": "user", "content": "thanks for the help"}], "max_tokens": 4}
         assert c.post("/v1/chat/completions", headers=h, json=ok).status_code == 200
         assert c.put("/v1/settings/moderation", headers=h, json={"moderation": "bogus"}).status_code == 422
+
+
+def test_benchmark_scoring(llm_dir):
+    """Choice scoring must match a direct full-sequence log-likelihood computation."""
+    import torch.nn.functional as F
+    from autolearn.llm.benchmarks import score_choices
+    e = Engine(llm_dir / "registry" / "versions" / "v1", "cpu")
+    ctx, choices = "The cat sat on the", [" mat.", " moon and then flew away."]
+    total, mean = score_choices(e.model, e.tok, e.device, ctx, choices, e.config.block_size)
+    for ch, t, m in zip(choices, total, mean):
+        c, x = [e.tok.eos] + e.tok.encode(ctx), e.tok.encode(ch)
+        ids = torch.tensor([c + x])
+        logits, _ = e.model(ids, targets=torch.full_like(ids, -100))
+        lp = F.log_softmax(logits[0].float(), -1)
+        want = sum(lp[len(c) + i - 1, x[i]].item() for i in range(len(x)))
+        assert abs(t - want) < 1e-3 and abs(m - want / len(x)) < 1e-3

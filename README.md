@@ -181,6 +181,10 @@ Retrieval uses BM25 via SQLite FTS5, so no extra service is needed. Passing
 `"knowledge_base": "<kb>"` to chat completions grounds the answer in the top passages and returns
 `citations`. This is how the model answers about company-specific facts it was never trained on.
 
+**Benchmarks.** `python -m autolearn.llm.benchmarks --ckpt <path>.pt` (or `--version vN`) scores
+HellaSwag, ARC-Easy and ARC-Challenge by answer log-likelihood. Random guessing is 25%; GPT-2 small
+(124M) gets about 29% on HellaSwag and 44% on ARC-Easy.
+
 > **Reality check.** Quality depends on scale, not code. A 22M-parameter model trained on a laptop
 > writes loosely fluent text but is **not** a useful assistant. Matching GPT-4 or Claude needs
 > roughly 100B+ parameters, 10T+ tokens and thousands of GPUs. See
