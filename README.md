@@ -1,23 +1,32 @@
 # AutoLearn
 
-A self-hosted AI platform you can sell as an API. It has two products behind one set of API keys,
-billing plans and usage meters:
+A self-hosted AI platform you can sell as an API: an **OpenAI-compatible** API (the official `openai`
+SDKs work unchanged) plus AutoML, behind one set of API keys, billing plans and usage meters.
 
-1. **AutoLearn ML (AutoML).** Customers upload their own tabular or text data. The service trains a
-   prediction model from scratch, serves it over HTTP, watches its own accuracy and input drift, and
-   **retrains itself** from feedback. A new model goes live only if it beats the current one on
-   unseen data.
-2. **AutoLearn LLM.** A GPT-style language model built entirely from scratch: a data pipeline that
-   streams huge public corpora, its own tokenizer, transformer, pretraining, and chat fine-tuning.
-   It is served through an **OpenAI-compatible** API and **keeps learning from user feedback**
-   (SFT + DPO, with a champion/challenger gate).
+| Capability | Endpoint | Notes |
+|---|---|---|
+| Chat and completions | `/v1/chat/completions`, `/v1/completions` | streaming, stop/seed/temperature/top-p, per-tenant metering |
+| Function calling | `tools`, `tool_choice` | OpenAI `tool_calls` format, also streamed |
+| Guaranteed-valid JSON | `response_format` | `json_object` / `json_schema` via constrained decoding |
+| Embeddings | `/v1/embeddings` | 384-dim, normalised; float or base64 |
+| Answers from your documents (RAG) | `/v1/knowledge/*`, `knowledge_base` on chat | hybrid keyword + semantic search, citations |
+| **Custom model per customer** | `/v1/custom-models/*` | LoRA adapter trained on the customer's examples and feedback; promoted only if it beats the current one |
+| Learning from feedback | `/v1/feedback` | opt-in; feeds the custom models and AutoLearn's own model |
+| Content moderation | `/v1/moderations` | own classifier (Civil Comments), off/flag/block per tenant |
+| AutoML predictions | `/v1/projects/*` | trains, monitors drift, **retrains itself** from feedback |
+| Accounts and billing | `/v1/keys`, `/v1/me`, Stripe checkout and portal, `/dashboard` | roles, quotas, rate limits, audit log |
+
+Models: **`autolearn-pro`** (Qwen2.5-1.5B-Instruct, Apache-2.0, for production), **`autolearn-embed`**, and
+**`autolearn-llm`**, a GPT-style model built entirely from scratch here (data pipeline, tokenizer, transformer,
+pretraining on free GPUs, chat tuning) that keeps learning from feedback. All of them run on one inference
+engine written in this repo (`autolearn/llm/`), with no `transformers` dependency.
 
 ```
                        ┌──────────────────────────── FastAPI (one service) ───────────────────────────┐
  customers ──HTTPS──▶  │ auth (API keys, roles) · tenants · plans/quotas · rate limits · usage metering │
   (X-API-Key or        │ audit log · request IDs · JSON logs · Prometheus /metrics                     │
    Bearer token)       ├───────────────────────────────┬──────────────────────────────────────────────┤
-                       │ /v1/projects/* (AutoML)        │ /v1/chat/completions, /v1/completions (LLM)  │
+                       │ /v1/projects/* (AutoML)        │ /v1/chat/completions (+tools, JSON), /v1/embeddings│
                        │  ingest → AutoML → registry    │  Engine (KV cache, streaming SSE)             │
                        │  predict → feedback            │  feedback (opt-in) → continual worker         │
                        │  background learner:           │   SFT + DPO + replay → eval gate → publish    │
