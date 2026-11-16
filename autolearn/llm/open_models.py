@@ -177,7 +177,7 @@ def catalog(root: str | Path | None) -> dict[str, dict]:
     if root and Path(root).exists():
         for d in sorted(Path(root).iterdir()):
             m = read_manifest(d)
-            if m and (d / "config.json").exists() and any(d.glob("*.safetensors")):
+            if m and m.get("type", "chat") == "chat" and (d / "config.json").exists() and any(d.glob("*.safetensors")):
                 out[m["id"]] = {**m, "path": str(d)}
     return out
 

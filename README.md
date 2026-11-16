@@ -178,7 +178,9 @@ r = client.chat.completions.create(model="autolearn-llm",
 ```
 
 **Knowledge bases (RAG).** Customers upload their own documents (`POST /v1/knowledge/{kb}/documents`).
-Retrieval uses BM25 via SQLite FTS5, so no extra service is needed. Passing
+Retrieval is hybrid: BM25 keyword ranking via SQLite FTS5 plus embedding similarity, merged with
+reciprocal rank fusion, with no extra service needed. On paraphrased questions with no shared keywords,
+keyword-only search found 0/4 right answers and hybrid found 3/4. Passing
 `"knowledge_base": "<kb>"` to chat completions grounds the answer in the top passages and returns
 `citations`. This is how the model answers about company-specific facts it was never trained on.
 
@@ -197,6 +199,7 @@ HellaSwag, ARC-Easy and ARC-Challenge by answer log-likelihood. Random guessing 
 | Model id | What it is | Best for |
 |---|---|---|
 | `autolearn-pro` | Qwen2.5-1.5B-Instruct (Apache-2.0), served on AutoLearn's own transformer engine | Production chat, drafting, code, answers from your knowledge bases |
+| `autolearn-embed` | bge-small-en-v1.5 embeddings (MIT, 384 dims) on our own BERT encoder (`autolearn/llm/embeddings.py`) | `/v1/embeddings`, semantic search; powers hybrid knowledge-base retrieval |
 | `autolearn-llm` | AutoLearn's own model, trained from scratch here and continually improved from opted-in feedback | Experimentation; grows with the training campaigns |
 
 Open-weight models run on the same engine as ours: Qwen2 and Llama-family weights are mapped straight onto
@@ -206,6 +209,7 @@ reference implementation, and the chat format against the model's official templ
 ```bash
 python -m autolearn.llm.open_models add Qwen/Qwen2.5-7B-Instruct --name autolearn-max   # needs ~16GB GPU
 python -m autolearn.llm.open_models list
+python -m autolearn.llm.embeddings add BAAI/bge-small-en-v1.5 --name autolearn-embed   # embeddings
 ```
 
 **Custom models per customer** (`autolearn/llm/custom.py`, `lora.py`): each company gets its own LoRA

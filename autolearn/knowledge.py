@@ -6,6 +6,10 @@ most relevant passages (BM25 ranking via SQLite FTS5) and the LLM answers ground
     DELETE /v1/knowledge/{kb}/documents/{id} delete one document
     DELETE /v1/knowledge/{kb}                delete a whole knowledge base
     POST   /v1/knowledge/{kb}/search         ranked passages for a query
+
+Search is hybrid when an embedding model is installed: BM25 keyword ranking and embedding (meaning) ranking
+are merged with reciprocal rank fusion, so "how do I get my money back" finds the refund policy even though
+it shares no words with it. Without an embedding model it falls back to BM25 alone.
     POST   /v1/chat/completions {"knowledge_base": "<kb>", ...}   grounded chat (see llm/routes.py)
 """
 
@@ -14,6 +18,8 @@ from __future__ import annotations
 import re
 import time
 import uuid
+
+import numpy as np
 
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -24,6 +30,10 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS kb_documents (
   tenant TEXT NOT NULL, kb TEXT NOT NULL, doc_id TEXT NOT NULL, title TEXT, chars INTEGER NOT NULL,
   chunks INTEGER NOT NULL, created_at REAL NOT NULL, PRIMARY KEY (tenant, kb, doc_id)
+);
+CREATE TABLE IF NOT EXISTS kb_vectors (
+  tenant TEXT NOT NULL, kb TEXT NOT NULL, doc_id TEXT NOT NULL, chunk INTEGER NOT NULL, vec BLOB NOT NULL,
+  PRIMARY KEY (tenant, kb, doc_id, chunk)
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks USING fts5(
   text, tenant UNINDEXED, kb UNINDEXED, doc_id UNINDEXED, title UNINDEXED, chunk UNINDEXED,
@@ -64,11 +74,46 @@ def fts_query(q: str) -> str | None:
     return " OR ".join(f'"{t}"' for t in dict.fromkeys(terms)) or None
 
 
+RRF_K = 60  # reciprocal rank fusion constant (Cormack et al., 2009)
+
+
 class Knowledge:
-    def __init__(self, db):
+    def __init__(self, db, embedder=None):
         self.db = db
+        self.embedder = embedder or (lambda: None)  # callable returning an Embedder or None
         with db.lock:
             db.conn.executescript(SCHEMA)
+
+    # ------------------------------------------------------------- vectors --
+    def _embed_missing(self, tenant, kb, limit=5000):
+        """Embed chunks that have no vector yet (new uploads, or documents added before embeddings existed)."""
+        emb = self.embedder()
+        if emb is None:
+            return 0
+        rows = self.db.q(
+            "SELECT c.doc_id, c.chunk, c.text FROM kb_chunks c WHERE c.tenant=? AND c.kb=? AND NOT EXISTS "
+            "(SELECT 1 FROM kb_vectors v WHERE v.tenant=c.tenant AND v.kb=c.kb AND v.doc_id=c.doc_id "
+            "AND v.chunk=c.chunk) LIMIT ?", (tenant, kb, limit))
+        if not rows:
+            return 0
+        vecs = emb.encode([r["text"] for r in rows]).astype(np.float16)
+        self.db.many("INSERT OR REPLACE INTO kb_vectors VALUES (?,?,?,?,?)",
+                     [(tenant, kb, r["doc_id"], int(r["chunk"]), v.tobytes()) for r, v in zip(rows, vecs)])
+        return len(rows)
+
+    def _semantic(self, tenant, kb, query, n):
+        emb = self.embedder()
+        if emb is None:
+            return []
+        self._embed_missing(tenant, kb)
+        rows = self.db.q("SELECT doc_id, chunk, vec FROM kb_vectors WHERE tenant=? AND kb=?", (tenant, kb))
+        if not rows:
+            return []
+        m = np.frombuffer(b"".join(r["vec"] for r in rows), dtype=np.float16).reshape(len(rows), -1)
+        q = emb.encode([query], query=True)[0].astype(np.float32)
+        sims = m.astype(np.float32) @ q
+        top = np.argsort(-sims)[:n]
+        return [(rows[i]["doc_id"], int(rows[i]["chunk"]), float(sims[i])) for i in top]
 
     def add(self, tenant, kb, docs):
         out = []
@@ -90,17 +135,20 @@ class Knowledge:
                     self.db.conn.execute("ROLLBACK")
                     raise
             out.append({"id": doc_id, "title": d.get("title"), "chunks": len(chunks)})
+        self._embed_missing(tenant, kb)
         return out
 
     def delete_doc(self, tenant, kb, doc_id):
         with self.db.lock:
             self.db.conn.execute("DELETE FROM kb_chunks WHERE tenant=? AND kb=? AND doc_id=?", (tenant, kb, doc_id))
+            self.db.conn.execute("DELETE FROM kb_vectors WHERE tenant=? AND kb=? AND doc_id=?", (tenant, kb, doc_id))
             return self.db.conn.execute("DELETE FROM kb_documents WHERE tenant=? AND kb=? AND doc_id=?",
                                         (tenant, kb, doc_id)).rowcount
 
     def delete_kb(self, tenant, kb):
         with self.db.lock:
             self.db.conn.execute("DELETE FROM kb_chunks WHERE tenant=? AND kb=?", (tenant, kb))
+            self.db.conn.execute("DELETE FROM kb_vectors WHERE tenant=? AND kb=?", (tenant, kb))
             return self.db.conn.execute("DELETE FROM kb_documents WHERE tenant=? AND kb=?", (tenant, kb)).rowcount
 
     def docs(self, tenant, kb):
@@ -115,14 +163,33 @@ class Knowledge:
         return self.db.one("SELECT COALESCE(SUM(chunks),0) n FROM kb_documents WHERE tenant=?", (tenant,))["n"]
 
     def search(self, tenant, kb, query, top_k=5):
+        n = max(20, top_k * 4)
         fq = fts_query(query)
-        if not fq:
-            return []
-        rows = self.db.q(
-            "SELECT text, doc_id, title, chunk, bm25(kb_chunks) AS score FROM kb_chunks "
-            "WHERE kb_chunks MATCH ? AND tenant=? AND kb=? ORDER BY score LIMIT ?", (fq, tenant, kb, top_k))
-        return [{"document_id": r["doc_id"], "title": r["title"], "chunk": r["chunk"], "text": r["text"],
-                 "score": round(-r["score"], 4)} for r in rows]  # bm25(): lower is better -> negate
+        kw = self.db.q(
+            "SELECT doc_id, chunk, bm25(kb_chunks) AS score FROM kb_chunks "
+            "WHERE kb_chunks MATCH ? AND tenant=? AND kb=? ORDER BY score LIMIT ?", (fq, tenant, kb, n)) if fq else []
+        sem = self._semantic(tenant, kb, query, n)
+        if not sem:  # keyword-only mode: BM25 score (lower is better -> negate)
+            fused = [((r["doc_id"], int(r["chunk"])), -r["score"], "keyword") for r in kw[:top_k]]
+        else:
+            scores, how = {}, {}
+            for rank, r in enumerate(kw):
+                k = (r["doc_id"], int(r["chunk"]))
+                scores[k] = scores.get(k, 0) + 1 / (RRF_K + rank + 1)
+                how[k] = "keyword"
+            for rank, (d, c, _) in enumerate(sem):
+                k = (d, c)
+                scores[k] = scores.get(k, 0) + 1 / (RRF_K + rank + 1)
+                how[k] = "both" if how.get(k) == "keyword" else "semantic"
+            fused = [(k, s, how[k]) for k, s in sorted(scores.items(), key=lambda x: -x[1])[:top_k]]
+        out = []
+        for (doc_id, chunk), score, match in fused:
+            r = self.db.one("SELECT text, title FROM kb_chunks WHERE tenant=? AND kb=? AND doc_id=? AND chunk=?",
+                            (tenant, kb, doc_id, chunk))
+            if r:
+                out.append({"document_id": doc_id, "title": r["title"], "chunk": chunk, "text": r["text"],
+                            "score": round(score, 4), "match": match})
+        return out
 
 
 def grounding_message(passages: list[dict]) -> str:
@@ -146,8 +213,8 @@ class SearchIn(BaseModel):
     top_k: int = Field(default=5, ge=1, le=50)
 
 
-def register_knowledge_routes(app, db, tenant_any, tenant_admin):
-    kbs = Knowledge(db)
+def register_knowledge_routes(app, db, tenant_any, tenant_admin, embedder=None):
+    kbs = Knowledge(db, embedder)
     app.state.knowledge = kbs
 
     def check_name(kb):

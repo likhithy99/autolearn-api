@@ -59,6 +59,13 @@ If your organisation opts in (`PATCH /v1/settings {"train_opt_in": true}`), rati
 are used to fine-tune the model. A new version goes live only if it beats the current one on
 held-out examples. **Your data is never used for training unless you opt in.**
 
+### Embeddings
+
+```python
+v = client.embeddings.create(model="autolearn-embed", input=["refund policy", "shipping times"])
+print(len(v.data[0].embedding))   # 384; vectors are normalised, so cosine similarity = dot product
+```
+
 ## 3. Your own custom model (pro and enterprise plans)
 
 Teach `autolearn-pro` your company's facts, tone and formats. Your training data shapes **only your
@@ -100,7 +107,8 @@ curl -X POST $BASE/v1/knowledge/policies/search -H "X-API-Key: $KEY" \
   -H 'Content-Type: application/json' -d '{"query": "refund window", "top_k": 3}'
 ```
 
-Re-uploading a document with the same `id` replaces it. Delete one with
+Search understands meaning as well as keywords, so "how do I get my money back?" finds your refund policy.
+Each result has `match`: `keyword`, `semantic` or `both`. Re-uploading a document with the same `id` replaces it. Delete one with
 `DELETE /v1/knowledge/{kb}/documents/{id}`, or a whole base with `DELETE /v1/knowledge/{kb}`.
 Grounded chat answers include `citations`. Unless you set `temperature`, grounded answers use 0.2 so they stick
 closely to your documents.

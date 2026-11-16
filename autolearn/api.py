@@ -541,8 +541,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     from .billing import register_billing_routes
     register_billing_routes(app, settings, db, new_key, tenant_admin)
+    # embedding model (optional): powers /v1/embeddings and hybrid knowledge-base search; loaded on first use
+    open_dir = settings.open_models_dir or settings.data_dir.parent / "models" / "open"
+    emb_state = {"embedder": None, "loaded": False}
+    emb_lock = threading.Lock()
+
+    def get_embedder():
+        with emb_lock:
+            if not emb_state["loaded"]:
+                from .llm.embeddings import Embedder, find_embedder
+                path = find_embedder(open_dir)
+                emb_state["embedder"] = Embedder(path) if path else None
+                emb_state["loaded"] = True
+            return emb_state["embedder"]
+
+    app.state.get_embedder = get_embedder
     from .knowledge import register_knowledge_routes
-    knowledge = register_knowledge_routes(app, db, tenant_any, tenant_admin)
+    knowledge = register_knowledge_routes(app, db, tenant_any, tenant_admin, get_embedder)
     from .moderation import register_moderation_routes
     moderate = register_moderation_routes(app, settings, db, tenant_any, tenant_admin)
     from .llm.routes import register_llm_routes

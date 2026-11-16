@@ -59,6 +59,13 @@ class CompletionRequest(_GenParams):
     prompt: str = Field(max_length=200_000)
 
 
+class EmbeddingRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    input: str | list[str] = Field(description="text or list of texts (max 2048)")
+    model: str | None = None
+    encoding_format: Literal["float", "base64"] = "float"
+
+
 class LLMFeedbackIn(BaseModel):
     completion_id: str
     rating: Literal[1, -1]
@@ -246,6 +253,11 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
             data.append({"id": MODEL_ID, "object": "model", "created": int(time.time()), "owned_by": "autolearn",
                          "version": cur, "description": "AutoLearn's own model, trained from scratch and "
                                                         "continually improved from customer feedback"})
+        emb = app.state.get_embedder() if hasattr(app.state, "get_embedder") else None
+        if emb is not None:
+            data.append({"id": emb.model_id, "object": "model", "created": int(time.time()), "owned_by": "autolearn",
+                         "type": "embedding", "dimensions": emb.dim,
+                         "description": "Text embeddings for search, clustering and recommendations"})
         for mid, m in holder.open_catalog().items():
             data.append({"id": mid, "object": "model", "created": int(time.time()), "owned_by": "autolearn",
                          "version": m.get("repo", "").split("/")[-1].lower(), "description": m.get("description"),
@@ -298,6 +310,34 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
                                  "finish_reason": finish}], "usage": usage}
 
         return run(p, "chat", req, lambda e, kw: e.chat_stream(messages, **kw), messages, chunk, full, extra)
+
+    @app.post("/v1/embeddings", tags=["llm"])
+    def embeddings(req: EmbeddingRequest, p=Depends(tenant_any)):
+        emb = app.state.get_embedder() if hasattr(app.state, "get_embedder") else None
+        if emb is None:
+            raise HTTPException(503, "no embedding model is installed on this server")
+        if req.model and req.model.split(":")[0] != emb.model_id:
+            raise HTTPException(404, {"error": {"type": "invalid_request_error", "code": "model_not_found",
+                                                "message": f"The model '{req.model}' does not exist. "
+                                                           f"Available: {emb.model_id}"}})
+        texts = [req.input] if isinstance(req.input, str) else req.input
+        if not texts or len(texts) > 2048 or any(not isinstance(t, str) or not t or len(t) > 50_000 for t in texts):
+            raise HTTPException(422, "input must be 1-2048 non-empty strings of at most 50,000 characters")
+        n = emb.count_tokens(texts)
+        check_tokens(p, n)
+        t0 = time.perf_counter()
+        vecs = emb.encode(texts)
+        db.add_usage(p.tenant, "llm_tokens", n)
+        db.add_usage(p.tenant, "embedding_requests", 1)
+        metrics.inc("autolearn_llm_tokens_total", {"type": "embedding"}, n)
+        metrics.observe("autolearn_llm_request_seconds", time.perf_counter() - t0)
+        if req.encoding_format == "base64":
+            import base64
+            items = [base64.b64encode(v.astype("<f4").tobytes()).decode() for v in vecs]
+        else:
+            items = [[round(float(x), 7) for x in v] for v in vecs]
+        return {"object": "list", "model": emb.model_id, "usage": {"prompt_tokens": n, "total_tokens": n},
+                "data": [{"object": "embedding", "index": i, "embedding": e} for i, e in enumerate(items)]}
 
     @app.post("/v1/completions", tags=["llm"])
     def completions(req: CompletionRequest, p=Depends(tenant_any)):
