@@ -258,6 +258,7 @@ not trained or busy · `413` body too large · `422` validation · `429` rate li
 | `AUTOLEARN_LEARN_INTERVAL` | `15` | seconds between autonomous learner checks |
 | `AUTOLEARN_LLM_DIR` | unset (LLM off) | versioned LLM registry |
 | `AUTOLEARN_OPEN_MODELS_DIR` | `<data dir>/../models/open` | open-weight models served next to ours |
+| `AUTOLEARN_LLM_BATCH` | 8 on CUDA, off elsewhere | continuous-batching slots per model (concurrent requests share each forward pass) |
 | `AUTOLEARN_LLM_DEVICE` | auto (cuda > mps > cpu) | inference device |
 | `AUTOLEARN_LLM_LOG_RETENTION_DAYS` | `30` | completion-log retention, enforced by the continual worker |
 | `AUTOLEARN_MAX_BODY_BYTES` | 20 MB | request size limit |

@@ -106,8 +106,9 @@ class EngineHolder:
     """Serves AutoLearn's own model (CURRENT published version, hot-swapped on promotion) plus any open-weight
     models registered under open_models_dir. Engines load lazily on first use."""
 
-    def __init__(self, llm_dir: Path | None, device: str | None, open_dir: Path | None = None):
-        self.llm_dir, self.device, self.open_dir = llm_dir, device, open_dir
+    def __init__(self, llm_dir: Path | None, device: str | None, open_dir: Path | None = None,
+                 batch_size: int | None = None):
+        self.llm_dir, self.device, self.open_dir, self.batch_size = llm_dir, device, open_dir, batch_size
         self._engine = None
         self._open: dict = {}
         self._lock = threading.Lock()
@@ -131,7 +132,11 @@ class EngineHolder:
             if name not in self._open:
                 from .engine import Engine
                 log.info("loading open model %s from %s", name, cat[name]["path"])
-                self._open[name] = Engine.open_model(cat[name]["path"], self.device)
+                eng = Engine.open_model(cat[name]["path"], self.device)
+                n = self.batch_size if self.batch_size is not None else (8 if eng.device.type == "cuda" else 0)
+                if n > 1:  # continuous batching: concurrent requests share forward passes
+                    eng.enable_batching(max_batch=n, max_len=min(4096, eng.config.block_size))
+                self._open[name] = eng
             return self._open[name]
 
     def registry(self):
@@ -156,7 +161,7 @@ class EngineHolder:
 def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, platform, knowledge=None,
                         moderate=None):
     open_dir = getattr(settings, "open_models_dir", None) or settings.data_dir.parent / "models" / "open"
-    holder = EngineHolder(settings.llm_dir, settings.llm_device, open_dir)
+    holder = EngineHolder(settings.llm_dir, settings.llm_device, open_dir, getattr(settings, "llm_batch_size", None))
     app.state.llm = holder
 
     def json_format(req) -> str | None:
