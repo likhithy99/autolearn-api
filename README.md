@@ -26,7 +26,7 @@ engine written in this repo (`autolearn/llm/`), with no `transformers` dependenc
  customers ──HTTPS──▶  │ auth (API keys, roles) · tenants · plans/quotas · rate limits · usage metering │
   (X-API-Key or        │ audit log · request IDs · JSON logs · Prometheus /metrics                     │
    Bearer token)       ├───────────────────────────────┬──────────────────────────────────────────────┤
-                       │ /v1/projects/* (AutoML)        │ /v1/chat/completions (+tools, JSON), /v1/embeddings│
+                       │ /v1/projects/* (AutoML)        │ /v1/chat (+tools, JSON) · /v1/embeddings      │
                        │  ingest → AutoML → registry    │  Engine (KV cache, streaming SSE)             │
                        │  predict → feedback            │  feedback (opt-in) → continual worker         │
                        │  background learner:           │   SFT + DPO + replay → eval gate → publish    │
