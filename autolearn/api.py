@@ -532,7 +532,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     from .billing import register_billing_routes
     register_billing_routes(app, settings, db, new_key, tenant_admin)
+    from .knowledge import register_knowledge_routes
+    knowledge = register_knowledge_routes(app, db, tenant_any, tenant_admin)
     from .llm.routes import register_llm_routes
-    register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, platform)
+    register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, platform, knowledge)
     return app
 

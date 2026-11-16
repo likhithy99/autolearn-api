@@ -32,7 +32,7 @@ billing plans and usage meters:
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 python scripts/fetch_datasets.py                 # Adult Census + California Housing demo data
-.venv/bin/pytest -q                              # 28 tests
+.venv/bin/pytest -q                              # 32 tests
 
 export AUTOLEARN_ADMIN_KEY=$(python3 -c "import secrets;print(secrets.token_urlsafe(32))")
 export AUTOLEARN_LLM_DIR=models/llm              # optional: enables the LLM endpoints
@@ -176,6 +176,11 @@ r = client.chat.completions.create(model="autolearn-llm",
 #   POST /v1/feedback {"completion_id": r.id, "rating": -1, "correction": "..."}
 ```
 
+**Knowledge bases (RAG).** Customers upload their own documents (`POST /v1/knowledge/{kb}/documents`).
+Retrieval uses BM25 via SQLite FTS5, so no extra service is needed. Passing
+`"knowledge_base": "<kb>"` to chat completions grounds the answer in the top passages and returns
+`citations`. This is how the model answers about company-specific facts it was never trained on.
+
 > **Reality check.** Quality depends on scale, not code. A 22M-parameter model trained on a laptop
 > writes loosely fluent text but is **not** a useful assistant. Matching GPT-4 or Claude needs
 > roughly 100B+ parameters, 10T+ tokens and thousands of GPUs. See
@@ -193,7 +198,9 @@ Full interactive docs are at `/docs`. Authenticate with `X-API-Key: <key>` or
 | Platform admin | `POST/GET /v1/admin/tenants`, `PATCH /v1/admin/tenants/{id}` (plan, suspend), `GET /v1/admin/tenants/{id}/usage`, `GET /v1/admin/llm`, `POST /v1/admin/llm/rollback` |
 | Account | `GET /v1/me`, `GET /v1/usage`, `GET/POST /v1/keys`, `DELETE /v1/keys/{id}`, `GET /v1/audit`, `GET/PATCH /v1/settings` (training opt-in) |
 | AutoML | `POST/GET /v1/projects`, `GET/PATCH/DELETE /v1/projects/{p}`, `POST /data`, `POST /data/csv`, `POST /train`, `GET /models`, `GET /models/{v}`, `POST /models/{v}/promote`, `POST /predict`, `POST /feedback`, `GET /monitor`, `GET /events` |
-| LLM | `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/feedback` |
+| LLM | `GET /v1/models`, `POST /v1/chat/completions` (+ `knowledge_base` for grounded answers with citations), `POST /v1/completions`, `POST /v1/feedback` |
+| Knowledge bases (RAG) | `POST/GET /v1/knowledge/{kb}/documents`, `DELETE /v1/knowledge/{kb}/documents/{id}`, `DELETE /v1/knowledge/{kb}`, `POST /v1/knowledge/{kb}/search` |
+| Billing | `GET /` (pricing), `GET /signup?plan=`, `POST /stripe/webhook`, `GET /billing/success`, `POST /v1/billing/portal` |
 
 Errors: `401` bad key · `402` plan quota/limit · `403` wrong role or suspended · `404` · `409`
 not trained or busy · `413` body too large · `422` validation · `429` rate limited (`Retry-After`).
@@ -214,6 +221,11 @@ not trained or busy · `413` body too large · `422` validation · `429` rate li
 Per-project AutoML settings (`PATCH /v1/projects/{p}` with `{"config": {...}}`): `min_rows`,
 `retrain_every`, `adaptive_min_new`, `min_improvement`, `degrade_tolerance`, `drift_threshold`,
 `cv_folds`, `max_train_rows`, `self_training`, `pseudo_label_threshold`, `max_pseudo_fraction`.
+
+## Going live
+
+See [docs/DEPLOY.md](docs/DEPLOY.md) for free hosting (Oracle Cloud Always Free VM with automatic
+HTTPS, or a Cloudflare Tunnel from your Mac) and the launch checklist.
 
 ## Production checklist (things code can't do for you)
 

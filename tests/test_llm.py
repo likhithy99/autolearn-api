@@ -162,3 +162,28 @@ def test_cleaner():
     out = cl(t)
     assert "<EMAIL>" in out and "<PHONE>" in out
     assert cl(t) is None  # exact duplicate removed
+
+
+def test_knowledge_base_rag(ctx):
+    c, h, _, _ = ctx
+    docs = {"documents": [
+        {"id": "refunds", "title": "Refund policy",
+         "text": "Enterprise customers can request a full refund within 60 days of purchase. "
+                 "Pro customers can request a refund within 14 days."},
+        {"id": "support", "title": "Support hours",
+         "text": "Support is available Monday to Friday, 9am to 6pm Eastern time."}]}
+    r = c.post("/v1/knowledge/policies/documents", headers=h, json=docs)
+    assert r.status_code == 201 and len(r.json()["documents"]) == 2
+    hits = c.post("/v1/knowledge/policies/search", headers=h,
+                  json={"query": "What is the refund window for enterprise?"}).json()["results"]
+    assert hits[0]["document_id"] == "refunds"
+    r = c.post("/v1/chat/completions", headers=h, json={
+        "messages": [{"role": "user", "content": "When is support available?"}],
+        "knowledge_base": "policies", "max_tokens": 8}).json()
+    assert r["citations"][0]["document_id"] == "support"
+    # tenant isolation
+    c2 = c.post("/v1/admin/tenants", json={"name": "Other", "plan": "pro"}, headers={"X-API-Key": ADMIN}).json()
+    h2 = {"X-API-Key": c2["admin_key"]["api_key"]}
+    assert c.post("/v1/knowledge/policies/search", headers=h2, json={"query": "refund"}).json()["results"] == []
+    assert c.delete("/v1/knowledge/policies/documents/refunds", headers=h).status_code == 200
+    assert [d["id"] for d in c.get("/v1/knowledge/policies/documents", headers=h).json()] == ["support"]

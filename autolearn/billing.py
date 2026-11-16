@@ -23,6 +23,7 @@ import hmac
 import html
 import json
 import logging
+import os
 import secrets
 import time
 
@@ -89,6 +90,7 @@ def register_billing_routes(app, settings, db, new_key, tenant_admin):
     prices = settings.stripe_prices or {}
     price_to_plan = {v: k for k, v in prices.items()}
     labels = settings.price_labels or {}
+    sales_email = os.environ.get("AUTOLEARN_SALES_EMAIL", "sales@example.com")
 
     def provision(session: dict) -> str | None:
         """Idempotently create the tenant + first admin key for a paid checkout session."""
@@ -120,7 +122,7 @@ def register_billing_routes(app, settings, db, new_key, tenant_admin):
             if plan in prices:
                 cta = f'<a class="btn" href="/signup?plan={plan}">Get {plan.title()}</a>'
             elif plan == "enterprise":
-                cta = '<a class="btn ghost" href="mailto:sales@example.com">Contact sales</a>'
+                cta = f'<a class="btn ghost" href="mailto:{html.escape(sales_email)}">Contact sales</a>'
             else:
                 cta = '<span class="muted">Ask us for a key</span>'
             cards.append(f"""

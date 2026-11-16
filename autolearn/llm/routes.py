@@ -50,6 +50,8 @@ class _GenParams(BaseModel):
 
 class ChatRequest(_GenParams):
     messages: list[ChatMessage] = Field(min_length=1, max_length=500)
+    knowledge_base: str | None = Field(default=None, description="ground the answer in this knowledge base")
+    knowledge_top_k: int = Field(default=4, ge=1, le=20)
 
 
 class CompletionRequest(_GenParams):
@@ -97,7 +99,7 @@ class EngineHolder:
             return self._engine
 
 
-def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, platform):
+def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, platform, knowledge=None):
     holder = EngineHolder(settings.llm_dir, settings.llm_device)
     app.state.llm = holder
 
@@ -121,7 +123,8 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
         metrics.inc("autolearn_llm_tokens_total", {"type": "completion"}, ct)
         return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}
 
-    def run(p, kind: str, req, stream_factory, request_payload, chunk_builder, full_builder):
+    def run(p, kind: str, req, stream_factory, request_payload, chunk_builder, full_builder, extra=None):
+        extra = extra or {}
         engine = holder.get()
         kw = gen_kwargs(req)
         check_tokens(p, kw["max_tokens"])
@@ -138,7 +141,7 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
                     final = ev
             usage = record(p, cid, engine, kind, request_payload, text, final)
             metrics.observe("autolearn_llm_request_seconds", time.perf_counter() - t0)
-            return full_builder(cid, created, engine.version, text, final["finish_reason"], usage)
+            return {**full_builder(cid, created, engine.version, text, final["finish_reason"], usage), **extra}
 
         include_usage = bool((req.stream_options or {}).get("include_usage"))
 
@@ -146,7 +149,8 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
             text, final = "", {"finish_reason": "stop", "prompt_tokens": 0, "completion_tokens": 0}
             try:
                 if kind == "chat":
-                    yield _sse(chunk_builder(cid, created, engine.version, {"role": "assistant", "content": ""}, None))
+                    yield _sse({**chunk_builder(cid, created, engine.version, {"role": "assistant", "content": ""},
+                                                None), **extra})
                 for ev in stream_factory(engine, kw):
                     if "delta" in ev:
                         text += ev["delta"]
@@ -180,6 +184,25 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
     def chat_completions(req: ChatRequest, p=Depends(tenant_any)):
         messages = [{"role": "system" if m.role == "developer" else m.role, "content": m.content}
                     for m in req.messages if m.role != "tool"]
+        extra = {}
+        if req.knowledge_base:
+            if knowledge is None:
+                raise HTTPException(503, "knowledge bases are not enabled")
+            from ..knowledge import grounding_message
+            question = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "") or ""
+            if isinstance(question, list):
+                question = " ".join(x.get("text", "") for x in question if isinstance(x, dict))
+            passages = knowledge.search(p.tenant, req.knowledge_base, question, req.knowledge_top_k)
+            db.add_usage(p.tenant, "kb_searches", 1)
+            ground = grounding_message(passages) if passages else \
+                "No relevant sources were found. Say you don't know if the question needs specific facts."
+            sys_msgs = [m for m in messages if m["role"] == "system"]
+            if sys_msgs:
+                sys_msgs[0]["content"] = f"{sys_msgs[0]['content']}\n\n{ground}"
+            else:
+                messages = [{"role": "system", "content": ground}] + messages
+            extra["citations"] = [{k: v for k, v in x.items() if k != "score"} | {"score": x["score"]}
+                                  for x in passages]
 
         def chunk(cid, created, ver, delta, finish):
             d = {} if delta is None else (delta if isinstance(delta, dict) else {"content": delta})
@@ -191,7 +214,7 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
                     "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
                                  "finish_reason": finish}], "usage": usage}
 
-        return run(p, "chat", req, lambda e, kw: e.chat_stream(messages, **kw), messages, chunk, full)
+        return run(p, "chat", req, lambda e, kw: e.chat_stream(messages, **kw), messages, chunk, full, extra)
 
     @app.post("/v1/completions", tags=["llm"])
     def completions(req: CompletionRequest, p=Depends(tenant_any)):
