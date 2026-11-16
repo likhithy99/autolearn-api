@@ -20,12 +20,21 @@ cat > .env <<'EOF'
 AUTOLEARN_ADMIN_KEY=<long random string>
 AUTOLEARN_DATA_DIR=/home/ubuntu/autolearn-data
 AUTOLEARN_LLM_DIR=/home/ubuntu/autolearn-models
+AUTOLEARN_OPEN_MODELS_DIR=/home/ubuntu/autolearn-api/models/open
 AUTOLEARN_PUBLIC_URL=https://api.yourdomain.com
 STRIPE_SECRET_KEY=sk_live_...
 STRIPE_WEBHOOK_SECRET=whsec_...
 STRIPE_PRICE_PRO=price_...
 EOF
 chmod 600 .env
+```
+
+Install the models (about 3.2 GB, one time):
+
+```bash
+.venv/bin/python -m autolearn.llm.open_models add Qwen/Qwen2.5-1.5B-Instruct --name autolearn-pro
+.venv/bin/python -m autolearn.llm.embeddings add BAAI/bge-small-en-v1.5 --name autolearn-embed
+.venv/bin/python -m autolearn.moderation train --rows 400000 --out models/moderation   # ~20 min, optional
 ```
 
 `/etc/systemd/system/autolearn.service`:
@@ -54,8 +63,12 @@ api.yourdomain.com {
 }
 ```
 
+Custom-model trainer (trains each customer's adapter from their examples and feedback), in
+`/etc/systemd/system/autolearn-custom.service`: same as above, with
+`ExecStart=/home/ubuntu/autolearn-api/.venv/bin/python -m autolearn.llm.custom --data-dir /home/ubuntu/autolearn-data --open-dir /home/ubuntu/autolearn-api/models/open`
+
 ```bash
-sudo systemctl enable --now autolearn caddy
+sudo systemctl enable --now autolearn autolearn-custom caddy
 ```
 
 Point the domain's DNS `A` record at the VM's public IP. Open ports 80 and 443 in both the Oracle
@@ -71,6 +84,17 @@ cloudflared tunnel --url http://localhost:8000      # prints a public https://*.
 This takes zero setup and gives free HTTPS. The quick-tunnel URL changes on every restart; a named
 tunnel on your own domain (free Cloudflare account) gives a stable URL. The API is down whenever the
 Mac sleeps or is offline, so use this for demos and early pilot customers, not paying production traffic.
+
+## Sizing `autolearn-pro`
+
+| Hardware | Memory for the model | Notes |
+|---|---|---|
+| CPU only (e.g. Oracle free Arm VM) | ~6.5 GB RAM (fp32) | Works; a few tokens/second per request. Fine for a demo and light pilots |
+| Apple M-series | ~3.5 GB (bf16) | ~4 tokens/s measured on an M3 while it was also training a model, so faster when idle |
+| NVIDIA T4/L4/A10 (cloud, ~$0.3–1/h) | ~3.5 GB VRAM + KV cache | The production choice. Continuous batching is on by default, so concurrent requests share the GPU |
+
+Custom-model training needs the same memory again plus ~1 GB, so run the trainer on the GPU box or at
+quiet times.
 
 ## Production checklist
 
