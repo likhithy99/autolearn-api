@@ -156,7 +156,7 @@ def test_custom_model_per_tenant(tmp_path, qwen_dir):
         assert c.post("/v1/custom-models/tiny-open/train", headers=acme).status_code == 202
 
         engine = app.state.llm.resolve("tiny-open")
-        out = train_custom(engine, app.state.db, app.state.adapters, acme_id, steps=60, lr=5e-3, anchor_n=2,
+        out = train_custom(engine, app.state.db, app.state.adapters, acme_id, steps=60, lr=5e-3, anchor_n=4,
                            anchor_tokens=8, tolerance=10.0)
         assert out["promoted"], out["eval"]
         assert out["eval"]["challenger"]["examples_loss"] < out["eval"]["champion"]["examples_loss"]

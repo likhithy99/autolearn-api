@@ -212,6 +212,8 @@ def train_custom(engine, db: DB, store: AdapterStore, tenant: str, *, min_exampl
     with engine.lock:  # in-process callers share the serving engine
         anchor = anchors(engine, store.root, anchor_n, anchor_tokens)
         engine._loaded_adapter = 0
+        # replay half the anchors during training; judge "general ability" only on the other half (never trained on)
+        anchor_train, anchor_eval = anchor[::2], anchor[1::2] or anchor
         base_version, champion = store.active(tenant, model_id)
         rng = random.Random(0)
         rng.shuffle(sft)
@@ -230,7 +232,8 @@ def train_custom(engine, db: DB, store: AdapterStore, tenant: str, *, min_exampl
             for c, r in pairs:
                 ref.append((_seq_logprobs(model, c, block, device).item(), _seq_logprobs(model, r, block, device).item()))
         eval_set = hold or train
-        champ = {"examples_loss": _loss(model, eval_set, block, device), "anchor_loss": _loss(model, anchor, block, device)}
+        champ = {"examples_loss": _loss(model, eval_set, block, device),
+                 "anchor_loss": _loss(model, anchor_eval, block, device)}
 
         # challenger starts from the champion adapter (cumulative learning) or a fresh one
         if champion is not None:
@@ -247,9 +250,9 @@ def train_custom(engine, db: DB, store: AdapterStore, tenant: str, *, min_exampl
         for step in range(steps):
             b = rng.sample(train, min(batch, len(train)))
             loss = model(*collate(b, block, device))[1]
-            if anchor and anchor_weight > 0:
-                loss = loss + anchor_weight * model(*collate(rng.sample(anchor, min(2, len(anchor))), block,
-                                                             device))[1]
+            if anchor_train and anchor_weight > 0:
+                loss = loss + anchor_weight * model(*collate(rng.sample(anchor_train, min(2, len(anchor_train))),
+                                                             block, device))[1]
             if pairs and dpo_weight > 0:
                 i = rng.randrange(len(pairs))
                 (c, r), (rc, rr) = pairs[i], ref[i]
@@ -263,7 +266,8 @@ def train_custom(engine, db: DB, store: AdapterStore, tenant: str, *, min_exampl
         for p in params:
             p.requires_grad_(False)
         state = get_adapter(model)
-        chall = {"examples_loss": _loss(model, eval_set, block, device), "anchor_loss": _loss(model, anchor, block, device)}
+        chall = {"examples_loss": _loss(model, eval_set, block, device),
+                 "anchor_loss": _loss(model, anchor_eval, block, device)}
         use(champion)
         engine._loaded_adapter = 0  # weights changed in place; force the next request to reload its adapter
 
