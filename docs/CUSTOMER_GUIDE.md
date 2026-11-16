@@ -44,7 +44,7 @@ for await (const chunk of r) process.stdout.write(chunk.choices[0]?.delta?.conte
 Models (`GET /v1/models`): **`autolearn-pro`** for production use, and **`autolearn-llm`**, our own model,
 which is retrained from customer feedback.
 
-Supported parameters: `messages`, `max_tokens`, `temperature`, `top_p`, `stop`, `seed`, `stream`,
+Supported parameters: `messages`, `tools`, `tool_choice`, `max_tokens`, `temperature`, `top_p`, `stop`, `seed`, `stream`,
 `stream_options.include_usage`, plus the AutoLearn extras `knowledge_base`, `knowledge_top_k`,
 `top_k` and `repetition_penalty`.
 
@@ -58,6 +58,25 @@ curl -X POST $BASE/v1/feedback -H "X-API-Key: $KEY" -H 'Content-Type: applicatio
 If your organisation opts in (`PATCH /v1/settings {"train_opt_in": true}`), ratings and corrections
 are used to fine-tune the model. A new version goes live only if it beats the current one on
 held-out examples. **Your data is never used for training unless you opt in.**
+
+### Function calling (tools)
+
+`autolearn-pro` can call your functions, using the same format as OpenAI:
+
+```python
+tools = [{"type": "function", "function": {"name": "get_order_status",
+          "description": "Get the shipping status of an order",
+          "parameters": {"type": "object", "properties": {"order_id": {"type": "string"}},
+                         "required": ["order_id"]}}}]
+r = client.chat.completions.create(model="autolearn-pro", tools=tools,
+        messages=[{"role": "user", "content": "Where is my order A-7731?"}])
+call = r.choices[0].message.tool_calls[0]        # finish_reason == "tool_calls"
+# run your function, then send the result back:
+messages += [r.choices[0].message, {"role": "tool", "tool_call_id": call.id, "content": '{"status": "shipped"}'}]
+```
+
+`tool_choice` accepts `"auto"` (default), `"none"`, `"required"` or a specific function. Calls to functions
+you didn't define, or with invalid JSON, are never returned as tool calls.
 
 ### Embeddings
 

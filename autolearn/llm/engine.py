@@ -108,7 +108,9 @@ class Engine:
         caches = [{} for _ in range(self.config.n_layer)]
         idx = torch.tensor([prompt], dtype=torch.long, device=self.device)
         logits, _ = self.model(idx, caches=caches, start_pos=0)
-        pos, seen = len(prompt), list(prompt)
+        # penalise repeats of generated tokens only: penalising the prompt suppresses tokens the answer *should*
+        # reuse (tool-call markup from the tool spec, wording from knowledge-base sources)
+        pos, seen = len(prompt), []
         for _ in range(max_new):
             l = logits[0, -1].float().cpu()
             if repetition_penalty != 1.0 and seen:
@@ -175,9 +177,16 @@ class Engine:
         yield {"finish_reason": finish, "prompt_tokens": len(prompt_ids), "completion_tokens": len(out_ids)}
 
     # ------------------------------------------------------------ helpers --
-    def chat_stream(self, messages: list[dict], **kw):
-        ids, _ = self.tok.render_chat(messages, add_generation_prompt=True)
+    def chat_stream(self, messages: list[dict], tools: list[dict] | None = None, **kw):
+        if tools is not None:
+            ids, _ = self.tok.render_chat(messages, add_generation_prompt=True, tools=tools)
+        else:
+            ids, _ = self.tok.render_chat(messages, add_generation_prompt=True)
         return self.stream(ids, **kw)
+
+    @property
+    def supports_tools(self) -> bool:
+        return bool(getattr(self.tok, "supports_tools", False))
 
     def complete_stream(self, prompt: str, **kw):
         prefix = [self.tok.bos] if self.tok.bos is not None else []

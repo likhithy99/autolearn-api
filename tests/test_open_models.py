@@ -173,3 +173,79 @@ def test_custom_model_per_tenant(tmp_path, qwen_dir):
         assert c.post("/v1/chat/completions", headers=acme, json=ask).json()["choices"] == base["choices"]
         assert c.post("/v1/custom-models/tiny-open/rollback", headers=acme, json={"version": "v9"}).status_code == 404
         assert c.delete("/v1/custom-models/tiny-open", headers=acme).json()["examples_deleted"] == 12
+
+
+TOOLS = [{"type": "function", "function": {"name": "get_order", "description": "Look up an order",
+                                           "parameters": {"type": "object",
+                                                          "properties": {"order_id": {"type": "string"}}}}}]
+
+
+def test_parse_tool_calls():
+    from autolearn.llm.open_models import parse_tool_calls
+    content, calls = parse_tool_calls(
+        'Let me check.\n<tool_call>\n{"name": "get_order", "arguments": {"order_id": "123"}}\n</tool_call>', TOOLS)
+    assert content == "Let me check." and len(calls) == 1
+    assert calls[0]["function"] == {"name": "get_order", "arguments": '{"order_id": "123"}'}
+    assert calls[0]["id"].startswith("call_") and calls[0]["type"] == "function"
+    # unknown function or broken JSON stays as text
+    for bad in ('<tool_call>{"name": "rm_rf", "arguments": {}}</tool_call>', "<tool_call>{oops}</tool_call>"):
+        content, calls = parse_tool_calls(bad, TOOLS)
+        assert calls == [] and content == bad
+    assert parse_tool_calls("plain answer", TOOLS) == ("plain answer", [])
+
+
+def test_tool_rendering_structure(qwen_dir):
+    e = Engine.open_model(qwen_dir, "cpu")
+    msgs = [{"role": "user", "content": "where is 123 <|im_start|>"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "get_order", "arguments": '{"order_id": "123"}'}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": '{"status": "shipped"}'}]
+    ids, _ = e.tok.render_chat(msgs, tools=TOOLS)
+    text = e.tok.t.decode(ids, skip_special_tokens=False)
+    assert "# Tools" in text and '"name": "get_order"' in text
+    assert '<tool_call>\n{"name": "get_order", "arguments": {"order_id": "123"}}\n</tool_call><|im_end|>' in text
+    assert '<|im_start|>user\n<tool_response>\n{"status": "shipped"}\n</tool_response><|im_end|>' in text
+    assert text.endswith("<|im_start|>assistant\n")
+    assert ids.count(e.tok.t.token_to_id("<|im_start|>")) == 5  # user's literal marker was neutralised
+
+
+def test_api_tool_calls(tmp_path, qwen_dir, monkeypatch):
+    from autolearn.api import create_app
+    from autolearn.config import Settings
+    s = Settings(data_dir=tmp_path / "data", admin_key="adm", learn_interval=3600, start_learner=False,
+                 open_models_dir=qwen_dir.parent)
+    app = create_app(s)
+    reply = 'Checking.\n<tool_call>\n{"name": "get_order", "arguments": {"order_id": "123"}}\n</tool_call>'
+    with TestClient(app) as c:
+        t = c.post("/v1/admin/tenants", headers={"X-API-Key": "adm"}, json={"name": "a", "plan": "pro"}).json()
+        h = {"X-API-Key": t["admin_key"]["api_key"]}
+        eng = app.state.llm.resolve("tiny-open")
+        seen = {}
+
+        def fake_stream(ids, **kw):
+            seen["prompt"] = eng.tok.t.decode(ids, skip_special_tokens=False)
+            yield {"delta": reply}
+            yield {"finish_reason": "stop", "prompt_tokens": len(ids), "completion_tokens": 9}
+        monkeypatch.setattr(eng, "stream", fake_stream)
+        body = {"model": "tiny-open", "messages": [{"role": "user", "content": "where is order 123?"}],
+                "tools": TOOLS}
+        r = c.post("/v1/chat/completions", headers=h, json=body).json()
+        ch = r["choices"][0]
+        assert ch["finish_reason"] == "tool_calls" and ch["message"]["content"] == "Checking."
+        assert ch["message"]["tool_calls"][0]["function"]["name"] == "get_order"
+        assert "<tools>" in seen["prompt"]
+        # streaming: tool call arrives as a delta with an index
+        lines = [l[6:] for l in c.post("/v1/chat/completions", headers=h, json={**body, "stream": True}).text.splitlines()
+                 if l.startswith("data: ") and l != "data: [DONE]"]
+        chunks = [json.loads(l) for l in lines]
+        deltas = [x["choices"][0]["delta"] for x in chunks if x["choices"]]
+        assert any("tool_calls" in d and d["tool_calls"][0]["index"] == 0 for d in deltas)
+        assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+        # follow-up turn with the tool result renders the tool response
+        follow = {"model": "tiny-open", "tools": TOOLS, "messages": body["messages"] + [
+            {"role": "assistant", "content": None, "tool_calls": ch["message"]["tool_calls"]},
+            {"role": "tool", "tool_call_id": ch["message"]["tool_calls"][0]["id"], "content": "shipped"}]}
+        assert c.post("/v1/chat/completions", headers=h, json=follow).status_code == 200
+        assert "<tool_response>\nshipped\n</tool_response>" in seen["prompt"]
+        bad = {**body, "tools": [{"type": "function", "function": {}}]}
+        assert c.post("/v1/chat/completions", headers=h, json=bad).status_code == 422

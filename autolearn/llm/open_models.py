@@ -67,7 +67,18 @@ class ChatTokenizer:
     def decode(self, ids: list[int]) -> str:
         return self.t.decode(ids, skip_special_tokens=True)
 
-    def render_chat(self, messages: list[dict], add_generation_prompt: bool = True, system: str | None = None):
+    @property
+    def supports_tools(self) -> bool:
+        return self.fmt == "chatml"
+
+    def render_chat(self, messages: list[dict], add_generation_prompt: bool = True, system: str | None = None,
+                    tools: list[dict] | None = None):
+        if tools or any(m.get("tool_calls") or m["role"] == "tool" for m in messages):
+            if not self.supports_tools:
+                raise ValueError("this model does not support tool calling")
+            ids = self.t.encode(self._render_tools_text(messages, tools, add_generation_prompt, system),
+                                add_special_tokens=False).ids
+            return ids, [0] * len(ids)
         system = system or self.system_prompt
         if system and not any(m["role"] == "system" for m in messages):
             messages = [{"role": "system", "content": system}] + list(messages)
@@ -86,6 +97,60 @@ class ChatTokenizer:
             ids += h
             mask += [0] * len(h)
         return ids, mask
+
+    @staticmethod
+    def _text(content) -> str:
+        if isinstance(content, list):
+            return "".join(p.get("text", "") for p in content if isinstance(p, dict))
+        return content or ""
+
+    def _render_tools_text(self, messages, tools, add_generation_prompt, system) -> str:
+        """Qwen2.5 function-calling format (mirrors the model's official chat template). User-supplied text is
+        neutralised so it cannot inject control tokens; the template's own markers are added afterwards."""
+        dump = lambda x: json.dumps(x, ensure_ascii=False)  # noqa: E731
+        c = self._clean
+        msgs = list(messages)
+        first_sys = msgs[0]["role"] == "system"
+        sys_text = c(self._text(msgs[0]["content"])) if first_sys else (system or self.system_prompt or "")
+        out = "<|im_start|>system\n" + sys_text
+        if tools:
+            out += ("\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\n"
+                    "You are provided with function signatures within <tools></tools> XML tags:\n<tools>")
+            for t in tools:
+                out += "\n" + c(dump(t))
+            out += ("\n</tools>\n\nFor each function call, return a json object with function name and arguments "
+                    "within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, "
+                    "\"arguments\": <args-json-object>}\n</tool_call>")
+        out += "<|im_end|>\n"
+        for i, m in enumerate(msgs):
+            role = m["role"]
+            if i == 0 and first_sys:
+                continue
+            if role in ("user", "system") or (role == "assistant" and not m.get("tool_calls")):
+                out += f"<|im_start|>{role}\n{c(self._text(m['content']))}<|im_end|>\n"
+            elif role == "assistant":
+                out += "<|im_start|>assistant"
+                if self._text(m.get("content")):
+                    out += "\n" + c(self._text(m["content"]))
+                for tc in m["tool_calls"]:
+                    f = tc.get("function", tc)
+                    args = f.get("arguments", {})
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except ValueError:
+                            pass
+                    out += f'\n<tool_call>\n{{"name": "{c(f["name"])}", "arguments": {c(dump(args))}}}\n</tool_call>'
+                out += "<|im_end|>\n"
+            elif role == "tool":
+                if i == 0 or msgs[i - 1]["role"] != "tool":
+                    out += "<|im_start|>user"
+                out += "\n<tool_response>\n" + c(self._text(m["content"])) + "\n</tool_response>"
+                if i == len(msgs) - 1 or msgs[i + 1]["role"] != "tool":
+                    out += "<|im_end|>\n"
+        if add_generation_prompt:
+            out += "<|im_start|>assistant\n"
+        return out
 
     def _header(self, role: str) -> list[int]:
         if self.fmt == "chatml":
@@ -242,3 +307,31 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+TOOL_CALL_RE = __import__("re").compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", __import__("re").S)
+
+
+def parse_tool_calls(text: str, tools: list[dict] | None) -> tuple[str | None, list[dict]]:
+    """Split a model reply into (content, OpenAI-style tool_calls). Calls to unknown functions or with invalid JSON
+    are left in the content rather than returned as calls."""
+    import uuid
+    names = {(t.get("function") or t).get("name") for t in tools or []}
+    calls, kept = [], []
+    last = 0
+    for m in TOOL_CALL_RE.finditer(text):
+        try:
+            obj = json.loads(m.group(1))
+            name, args = obj["name"], obj.get("arguments", {})
+            if name not in names:
+                raise ValueError(name)
+        except (ValueError, KeyError, TypeError):
+            continue
+        kept.append(text[last:m.start()])
+        last = m.end()
+        calls.append({"id": "call_" + uuid.uuid4().hex[:24], "type": "function",
+                      "function": {"name": name, "arguments": args if isinstance(args, str)
+                                   else json.dumps(args, ensure_ascii=False)}})
+    kept.append(text[last:])
+    content = "".join(kept).strip()
+    return (content or None), calls
