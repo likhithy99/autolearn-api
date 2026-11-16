@@ -89,8 +89,8 @@ def main():
     ap.add_argument("--tokens-per-session", default="1400M")
     ap.add_argument("--files-per-session", type=int, default=2)
     ap.add_argument("--subset", default="100BT")
-    ap.add_argument("--batch", type=int, default=8)
-    ap.add_argument("--accum", type=int, default=8)
+    ap.add_argument("--batch", type=int, default=4)  # 8 x 1024 OOMs on a 15GB T4
+    ap.add_argument("--accum", type=int, default=16)
     ap.add_argument("--block", type=int, default=1024)
     ap.add_argument("--gpus-assumed", type=int, default=2, help="for converting target tokens to steps")
     ap.add_argument("--lr", type=float, default=6e-4)

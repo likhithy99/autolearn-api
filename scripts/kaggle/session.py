@@ -62,7 +62,8 @@ for rel, b64 in EMBEDDED.items():
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     with open(dst, "wb") as fh:
         fh.write(base64.b64decode(b64))
-env = dict(os.environ, PYTHONPATH=pkg_root, HF_HUB_DISABLE_TELEMETRY="1")
+env = dict(os.environ, PYTHONPATH=pkg_root, HF_HUB_DISABLE_TELEMETRY="1",
+           PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True")
 run("pip install -q 'tokenizers==0.23.3' datasets certifi", env)
 
 import torch  # noqa: E402
