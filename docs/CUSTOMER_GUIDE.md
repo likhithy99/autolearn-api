@@ -44,7 +44,7 @@ for await (const chunk of r) process.stdout.write(chunk.choices[0]?.delta?.conte
 Models (`GET /v1/models`): **`autolearn-pro`** for production use, and **`autolearn-llm`**, our own model,
 which is retrained from customer feedback.
 
-Supported parameters: `messages`, `tools`, `tool_choice`, `max_tokens`, `temperature`, `top_p`, `stop`, `seed`, `stream`,
+Supported parameters: `messages`, `tools`, `tool_choice`, `response_format`, `max_tokens`, `temperature`, `top_p`, `stop`, `seed`, `stream`,
 `stream_options.include_usage`, plus the AutoLearn extras `knowledge_base`, `knowledge_top_k`,
 `top_k` and `repetition_penalty`.
 
@@ -77,6 +77,22 @@ messages += [r.choices[0].message, {"role": "tool", "tool_call_id": call.id, "co
 
 `tool_choice` accepts `"auto"` (default), `"none"`, `"required"` or a specific function. Calls to functions
 you didn't define, or with invalid JSON, are never returned as tool calls.
+
+### JSON output (structured data extraction)
+
+```python
+r = client.chat.completions.create(model="autolearn-pro",
+    messages=[{"role": "user", "content": "Extract the order from this email: ..."}],
+    response_format={"type": "json_schema", "json_schema": {"name": "order", "schema": {
+        "type": "object", "properties": {"customer_name": {"type": "string"},
+                                         "items": {"type": "array", "items": {"type": "object"}}},
+        "required": ["customer_name", "items"]}}})
+order = json.loads(r.choices[0].message.content)
+```
+
+With `{"type": "json_object"}` or `json_schema`, the output is **guaranteed to be valid JSON**: decoding is
+constrained token by token. The schema guides the model's content. Make `max_tokens` large enough for the
+whole object; if it runs out, `finish_reason` is `length`.
 
 ### Embeddings
 

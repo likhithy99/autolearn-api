@@ -102,7 +102,8 @@ class Engine:
     # ---------------------------------------------------------------- core --
     @torch.no_grad()
     def _sample_ids(self, prompt: list[int], max_new: int, temperature: float, top_p: float, top_k: int,
-                    repetition_penalty: float, stop_ids: set[int], seed: int | None) -> Iterator[int]:
+                    repetition_penalty: float, stop_ids: set[int], seed: int | None,
+                    constraint=None) -> Iterator[int]:
         gen = torch.Generator(device="cpu")
         gen.manual_seed(seed if seed is not None else int(time.time_ns() % 2**31))
         caches = [{} for _ in range(self.config.n_layer)]
@@ -117,6 +118,15 @@ class Engine:
                 ids = torch.tensor(sorted(set(seen[-256:])))
                 vals = l[ids]
                 l[ids] = torch.where(vals > 0, vals / repetition_penalty, vals * repetition_penalty)
+            if constraint is not None:  # e.g. JSON mode: only tokens that keep the output valid
+                if constraint.done:
+                    return
+                allowed = [t for t in torch.argsort(l, descending=True)[:1024].tolist() if constraint.allows(t)]
+                if not allowed:
+                    return
+                masked = torch.full_like(l, -float("inf"))
+                masked[allowed] = l[allowed]
+                l = masked
             if temperature <= 0:
                 nxt = int(l.argmax())
             else:
@@ -134,6 +144,8 @@ class Engine:
                 nxt = int(torch.multinomial(probs, 1, generator=gen))
             if nxt in stop_ids:
                 return
+            if constraint is not None:
+                constraint.advance(nxt)
             yield nxt
             seen.append(nxt)
             if pos >= self.config.block_size:
@@ -143,7 +155,7 @@ class Engine:
 
     def stream(self, prompt_ids: list[int], max_tokens: int = 256, temperature: float = 0.7, top_p: float = 0.9,
                top_k: int = 50, repetition_penalty: float = 1.1, stop: list[str] | None = None,
-               seed: int | None = None, adapter: dict | None = None) -> Iterator[dict]:
+               seed: int | None = None, adapter: dict | None = None, json_mode: bool = False) -> Iterator[dict]:
         """Yields {'delta': str} chunks, then a final {'finish_reason', 'prompt_tokens', 'completion_tokens'}."""
         max_tokens = max(1, min(max_tokens, self.config.block_size - 1))
         keep = self.config.block_size - max_tokens
@@ -156,8 +168,12 @@ class Engine:
                 from .lora import set_adapter
                 set_adapter(self.model, adapter)  # this customer's custom model, or the base model
                 self._loaded_adapter = adapter
+            constraint = None
+            if json_mode:
+                from .constrained import JsonConstraint
+                constraint = JsonConstraint(self.tok)
             for tid in self._sample_ids(prompt_ids, max_tokens, temperature, top_p, top_k, repetition_penalty,
-                                        stop_ids, seed):
+                                        stop_ids, seed, constraint):
                 out_ids.append(tid)
                 text = self.tok.decode(out_ids)
                 if text.endswith("�"):

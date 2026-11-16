@@ -59,6 +59,8 @@ class ChatRequest(_GenParams):
     messages: list[ChatMessage] = Field(min_length=1, max_length=500)
     tools: list[dict[str, Any]] | None = Field(default=None, max_length=128)
     tool_choice: str | dict[str, Any] | None = None
+    response_format: dict[str, Any] | None = Field(
+        default=None, description='{"type": "json_object"} or {"type": "json_schema", "json_schema": {"schema": ...}}')
     knowledge_base: str | None = Field(default=None, description="ground the answer in this knowledge base")
     knowledge_top_k: int = Field(default=4, ge=1, le=20)
 
@@ -157,6 +159,13 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
     holder = EngineHolder(settings.llm_dir, settings.llm_device, open_dir)
     app.state.llm = holder
 
+    def json_format(req) -> str | None:
+        rf = getattr(req, "response_format", None) or {}
+        kind = rf.get("type", "text")
+        if kind not in ("text", "json_object", "json_schema"):
+            raise HTTPException(422, "response_format.type must be text, json_object or json_schema")
+        return None if kind == "text" else kind
+
     def check_tokens(p, needed: int):
         limit = PLANS[p.plan].get("llm_tokens_per_month")
         if limit is not None and db.usage(p.tenant).get("llm_tokens", 0) + needed > limit:
@@ -164,9 +173,12 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
 
     def gen_kwargs(req: _GenParams):
         stop = [req.stop] if isinstance(req.stop, str) else (req.stop or None)
-        return dict(max_tokens=req.max_completion_tokens or req.max_tokens or 256, temperature=req.temperature,
-                    top_p=req.top_p, top_k=req.top_k, repetition_penalty=req.repetition_penalty, stop=stop,
-                    seed=req.seed)
+        kw = dict(max_tokens=req.max_completion_tokens or req.max_tokens or 256, temperature=req.temperature,
+                  top_p=req.top_p, top_k=req.top_k, repetition_penalty=req.repetition_penalty, stop=stop,
+                  seed=req.seed)
+        if json_format(req):
+            kw["json_mode"] = True
+        return kw
 
     store = None
     if holder.open_dir is not None:
@@ -292,6 +304,9 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
                 f = t.get("function") if isinstance(t, dict) else None
                 if t.get("type") != "function" or not isinstance(f, dict) or not f.get("name"):
                     raise HTTPException(422, "each tool must be {'type': 'function', 'function': {'name': ...}}")
+        fmt = json_format(req)
+        if fmt and tools:
+            raise HTTPException(400, "response_format JSON cannot be combined with tools")
         messages = []
         for m in req.messages:
             if m.role == "tool" and not uses_tools:
@@ -308,6 +323,18 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
                 messages[0] = {**messages[0], "content": f"{messages[0]['content']}\n\n{rule}"}
             else:
                 messages.insert(0, {"role": "system", "content": f"{served.tok.system_prompt or ''}\n\n{rule}".strip()})
+        if fmt:  # output is constrained to valid JSON; tell the model what to put in it
+            rule = "Respond only with a single JSON object."
+            if fmt == "json_schema":
+                schema = (req.response_format.get("json_schema") or {}).get("schema")
+                if not isinstance(schema, dict):
+                    raise HTTPException(422, "json_schema.schema must be a JSON Schema object")
+                rule += " It must match this JSON Schema:\n" + json.dumps(schema, ensure_ascii=False)
+            if messages[0]["role"] == "system":
+                messages[0] = {**messages[0], "content": f"{messages[0]['content']}\n\n{rule}"}
+            else:
+                sysp = getattr(served.tok, "system_prompt", None) or ""
+                messages.insert(0, {"role": "system", "content": f"{sysp}\n\n{rule}".strip()})
         extra = {}
         if moderate:
             last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), None)
