@@ -249,3 +249,17 @@ def test_api_tool_calls(tmp_path, qwen_dir, monkeypatch):
         assert "<tool_response>\nshipped\n</tool_response>" in seen["prompt"]
         bad = {**body, "tools": [{"type": "function", "function": {}}]}
         assert c.post("/v1/chat/completions", headers=h, json=bad).status_code == 422
+
+
+def test_malformed_tool_calls_rejected(tmp_path, qwen_dir):
+    from autolearn.api import create_app
+    from autolearn.config import Settings
+    s = Settings(data_dir=tmp_path / "data", admin_key="adm", learn_interval=3600, start_learner=False,
+                 open_models_dir=qwen_dir.parent)
+    with TestClient(create_app(s)) as c:
+        t = c.post("/v1/admin/tenants", headers={"X-API-Key": "adm"}, json={"name": "a", "plan": "pro"}).json()
+        h = {"X-API-Key": t["admin_key"]["api_key"]}
+        for bad in ("nope", [1], [{"function": {"name": 5}}], [{"function": "x"}]):
+            r = c.post("/v1/chat/completions", headers=h, json={"model": "tiny-open", "tools": TOOLS, "messages": [
+                {"role": "user", "content": "hi"}, {"role": "assistant", "content": None, "tool_calls": bad}]})
+            assert r.status_code == 422, (bad, r.status_code)

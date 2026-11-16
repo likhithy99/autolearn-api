@@ -318,7 +318,13 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
                 continue
             msg = {"role": "system" if m.role == "developer" else m.role, "content": m.content}
             if getattr(m, "tool_calls", None):
-                msg["tool_calls"] = m.tool_calls
+                calls = m.tool_calls
+                if not isinstance(calls, list) or not all(
+                        isinstance(c, dict) and isinstance(c.get("function", c), dict)
+                        and isinstance(c.get("function", c).get("name"), str)
+                        and isinstance(c.get("function", c).get("arguments", "{}"), (str, dict)) for c in calls):
+                    raise HTTPException(422, "tool_calls must be a list of {'function': {'name': str, 'arguments': ...}}")
+                msg["tool_calls"] = calls
             messages.append(msg)
         if tools:  # steer the model in the system prompt (measurably raises correct tool use on small models)
             want = req.tool_choice["function"]["name"] if isinstance(req.tool_choice, dict) else None
