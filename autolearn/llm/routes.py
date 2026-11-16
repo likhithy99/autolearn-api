@@ -27,10 +27,13 @@ log = logging.getLogger("autolearn.llm")
 MODEL_ID = "autolearn-llm"
 
 
-# Measured on autolearn-pro: mean P(tool call) on requests that need one 0.73 -> 0.91, ~0 on chit-chat.
+# Measured on autolearn-pro (6 should-call / 5 should-not requests x 2 tool specs): with no hint the model often
+# asks for an order number the user already gave. This hint: mean P(call | needed) 0.95, max P(call | not
+# needed) 0.01; single-tool "where is my order A-7731?" 0.30 -> 0.84 vs the hint without the example.
 TOOL_HINT = ("When one of the functions can answer the request with the information the user already gave, call it "
              "right away instead of asking. If a required argument is missing, ask the user for it. Otherwise answer "
-             "normally.")
+             "normally. Example: if the user writes \"where is order X-1?\" and a function looks up orders by "
+             "order_id, call it with {\"order_id\": \"X-1\"}.")
 
 
 class ChatMessage(BaseModel):

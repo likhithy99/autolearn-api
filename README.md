@@ -38,6 +38,11 @@ engine written in this repo (`autolearn/llm/`), with no `transformers` dependenc
 
 ## Quick start
 
+**Live demo for prospects:** start the server, then `python examples/demo.py --admin-key <key>`. It walks through
+chat, answers from documents with citations, function calling, JSON extraction, embeddings, moderation and
+usage metering, using the official OpenAI SDK.
+
+
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 python scripts/fetch_datasets.py                 # Adult Census + California Housing demo data
