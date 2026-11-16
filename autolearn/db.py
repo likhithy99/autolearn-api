@@ -7,6 +7,7 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 
 SCHEMA = """
@@ -106,6 +107,15 @@ CREATE TABLE IF NOT EXISTS llm_feedback (
   created_at REAL NOT NULL,
   used_in_version TEXT
 );
+CREATE TABLE IF NOT EXISTS tuning_examples (  -- customer-supplied conversations for their custom model
+  id TEXT PRIMARY KEY,
+  tenant TEXT NOT NULL,
+  model TEXT NOT NULL,
+  messages TEXT NOT NULL,            -- JSON chat, ending with the ideal assistant reply
+  created_at REAL NOT NULL,
+  used_in_version TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_tuning_examples_tenant ON tuning_examples(tenant, model);
 CREATE TABLE IF NOT EXISTS stripe_events (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
@@ -162,6 +172,9 @@ class DB:
             for col in ("email", "stripe_customer_id", "stripe_subscription_id", "moderation"):
                 if col not in cols:
                     self.conn.execute(f"ALTER TABLE tenants ADD COLUMN {col} TEXT")
+            if "model" not in {r[1] for r in self.conn.execute("PRAGMA table_info(llm_completions)")}:
+                # which model answered (rows before this column existed came from our own model)
+                self.conn.execute("ALTER TABLE llm_completions ADD COLUMN model TEXT NOT NULL DEFAULT 'autolearn-llm'")
 
     # -- low level -----------------------------------------------------------
     def q(self, sql, args=()):
@@ -406,9 +419,10 @@ class DB:
                       (tenant, limit))
 
     # -- llm ---------------------------------------------------------------------
-    def add_completion(self, cid, tenant, key_id, version, kind, request, output, pt, ct):
-        self.x("INSERT INTO llm_completions VALUES (?,?,?,?,?,?,?,?,?,?)",
-               (cid, tenant, key_id, version, kind, dumps(request), output, pt, ct, time.time()))
+    def add_completion(self, cid, tenant, key_id, version, kind, request, output, pt, ct, model="autolearn-llm"):
+        self.x("INSERT INTO llm_completions (id, tenant, key_id, model_version, kind, request, output, prompt_tokens, "
+               "completion_tokens, created_at, model) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+               (cid, tenant, key_id, version, kind, dumps(request), output, pt, ct, time.time(), model))
 
     def get_completion(self, cid):
         r = self.one("SELECT * FROM llm_completions WHERE id=?", (cid,))
@@ -421,12 +435,13 @@ class DB:
                "ON CONFLICT(completion_id) DO UPDATE SET rating=excluded.rating, correction=excluded.correction, "
                "created_at=excluded.created_at, used_in_version=NULL", (cid, tenant, rating, correction, time.time()))
 
-    def unused_llm_feedback(self):
-        """Feedback from tenants that opted in to training, not yet consumed by a fine-tune."""
+    def unused_llm_feedback(self, model="autolearn-llm", tenant=None):
+        """Feedback from tenants that opted in to training, not yet consumed by a fine-tune of `model`."""
         rows = self.q(
-            "SELECT f.completion_id, f.rating, f.correction, c.kind, c.request, c.output FROM llm_feedback f "
-            "JOIN llm_completions c ON c.id = f.completion_id JOIN tenants t ON t.id = f.tenant "
-            "WHERE f.used_in_version IS NULL AND t.train_opt_in = 1 ORDER BY f.created_at")
+            "SELECT f.completion_id, f.tenant, f.rating, f.correction, c.kind, c.request, c.output "
+            "FROM llm_feedback f JOIN llm_completions c ON c.id = f.completion_id JOIN tenants t ON t.id = f.tenant "
+            "WHERE f.used_in_version IS NULL AND t.train_opt_in = 1 AND c.model = ? AND (? IS NULL OR f.tenant = ?) "
+            "ORDER BY f.created_at", (model, tenant, tenant))
         for r in rows:
             r["request"] = json.loads(r["request"])
         return rows
@@ -468,3 +483,41 @@ class DB:
         with self.lock:
             return self.conn.execute("UPDATE api_keys SET revoked=1 WHERE tenant=? AND id=?",
                                      (tenant, key_id)).rowcount
+
+    # -- custom-model training examples ----------------------------------------
+    def add_tuning_examples(self, tenant, model, examples):
+        now = time.time()
+        rows = [("tex_" + uuid.uuid4().hex[:16], tenant, model, dumps(m), now) for m in examples]
+        self.many("INSERT INTO tuning_examples (id, tenant, model, messages, created_at) VALUES (?,?,?,?,?)", rows)
+        return [r[0] for r in rows]
+
+    def unused_tuning_examples(self, tenant, model):
+        rows = self.q("SELECT id, messages FROM tuning_examples WHERE tenant=? AND model=? AND used_in_version IS NULL "
+                      "ORDER BY created_at", (tenant, model))
+        for r in rows:
+            r["messages"] = json.loads(r["messages"])
+        return rows
+
+    def mark_tuning_examples_used(self, ids, version):
+        self.many("UPDATE tuning_examples SET used_in_version=? WHERE id=?", [(version, i) for i in ids])
+
+    def tuning_stats(self, tenant, model):
+        return self.one("SELECT COUNT(*) total, SUM(used_in_version IS NULL) pending FROM tuning_examples "
+                        "WHERE tenant=? AND model=?", (tenant, model))
+
+    def tenants_with_pending_tuning(self, models):
+        """(tenant, model) pairs with unused uploaded examples, or unused feedback from opted-in tenants."""
+        if not models:
+            return []
+        qs = ",".join("?" * len(models))
+        return self.q(
+            # uploading examples is itself the consent; feedback needs the train_opt_in setting
+            f"SELECT DISTINCT e.tenant, e.model FROM tuning_examples e "
+            f"WHERE e.used_in_version IS NULL AND e.model IN ({qs}) "
+            f"UNION SELECT DISTINCT f.tenant, c.model FROM llm_feedback f JOIN llm_completions c "
+            f"ON c.id = f.completion_id JOIN tenants t ON t.id = f.tenant "
+            f"WHERE f.used_in_version IS NULL AND t.train_opt_in = 1 AND c.model IN ({qs})", (*models, *models))
+
+    def delete_tuning_examples(self, tenant, model):
+        with self.lock:
+            return self.conn.execute("DELETE FROM tuning_examples WHERE tenant=? AND model=?", (tenant, model)).rowcount

@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 
 from fastapi import Depends, HTTPException
@@ -70,6 +71,18 @@ class TenantSettings(BaseModel):
 
 class RollbackIn(BaseModel):
     version: str
+
+
+class TuningExample(BaseModel):
+    messages: list[ChatMessage] = Field(min_length=2, max_length=100)
+
+
+class TuningExamplesIn(BaseModel):
+    examples: list[TuningExample] = Field(min_length=1, max_length=1000)
+
+
+class CustomRollbackIn(BaseModel):
+    version: str | None = Field(default=None, description="adapter version to serve; null = the base model")
 
 
 class EngineHolder:
@@ -140,9 +153,22 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
                     top_p=req.top_p, top_k=req.top_k, repetition_penalty=req.repetition_penalty, stop=stop,
                     seed=req.seed)
 
+    store = None
+    if holder.open_dir is not None:
+        from .custom import AdapterStore
+        store = AdapterStore(settings.data_dir / "adapters")
+    app.state.adapters = store
+
+    def adapter_for(p, engine):
+        """(label, adapter state) for this tenant's custom version of an open model, if it has one."""
+        if store is None or not engine.supports_adapters or not PLANS[p.plan].get("self_training"):
+            return engine.version, None
+        version, state = store.active(p.tenant, engine.model_id)
+        return (f"custom-{version}", state) if state is not None else (engine.version, None)
+
     def record(p, cid, engine, kind, request, text, final):
         pt, ct = final.get("prompt_tokens", 0), final.get("completion_tokens", 0)
-        db.add_completion(cid, p.tenant, p.key_id, engine.version, kind, request, text, pt, ct)
+        db.add_completion(cid, p.tenant, p.key_id, engine.version, kind, request, text, pt, ct, engine.model_id)
         db.add_usage(p.tenant, "llm_tokens", pt + ct)
         db.add_usage(p.tenant, "llm_requests", 1)
         metrics.inc("autolearn_llm_tokens_total", {"type": "prompt"}, pt)
@@ -151,8 +177,14 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
 
     def run(p, kind: str, req, stream_factory, request_payload, chunk_builder, full_builder, extra=None):
         extra = extra or {}
-        engine = holder.resolve(req.model)
+        served = holder.resolve(req.model)
+        label, adapter = adapter_for(p, served)
         kw = gen_kwargs(req)
+        if served.supports_adapters:
+            kw["adapter"] = adapter
+        engine = SimpleNamespace(model_id=served.model_id, version=label)  # what the response reports
+        _stream = stream_factory
+        stream_factory = lambda _e, kw: _stream(served, kw)  # noqa: E731
         check_tokens(p, kw["max_tokens"])
         cid = ("chatcmpl-" if kind == "chat" else "cmpl-") + uuid.uuid4().hex
         created = int(time.time())
@@ -306,6 +338,83 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
         db.update_tenant(p.tenant, train_opt_in=int(body.train_opt_in))
         db.audit(p.tenant, p.key_id, "settings.update", body.model_dump())
         return body
+
+    # ------------------------------------------------------------ custom models --
+    def custom_model(p, model: str):
+        if store is None or model not in holder.open_catalog():
+            raise HTTPException(404, f"custom models are available for: {', '.join(holder.open_catalog()) or 'none'}")
+        return model
+
+    def need_plan(p):
+        if not PLANS[p.plan].get("self_training"):
+            raise HTTPException(402, f"custom models are not included in the '{p.plan}' plan; upgrade to pro")
+
+    def custom_status(p, model):
+        versions = store.versions(p.tenant, model)
+        fb = db.unused_llm_feedback(model, p.tenant) if db.get_tenant(p.tenant)["train_opt_in"] else []
+        stats = db.tuning_stats(p.tenant, model)
+        return {"model": model, "current_version": store.current(p.tenant, model),
+                "pending_examples": stats["pending"] or 0, "total_examples": stats["total"],
+                "pending_feedback": len(fb), "training_requested": store.training_requested(p.tenant, model),
+                "versions": [{k: v.get(k) for k in ("version", "promoted", "eval", "data", "created_at")}
+                             for v in versions]}
+
+    @app.get("/v1/custom-models", tags=["custom models"])
+    def list_custom(p=Depends(tenant_any)):
+        if store is None:
+            return []
+        return [custom_status(p, m) for m in holder.open_catalog()]
+
+    @app.get("/v1/custom-models/{model}", tags=["custom models"])
+    def get_custom(model: str, p=Depends(tenant_any)):
+        return custom_status(p, custom_model(p, model))
+
+    @app.post("/v1/custom-models/{model}/examples", tags=["custom models"], status_code=201)
+    def add_examples(model: str, body: TuningExamplesIn, p=Depends(tenant_admin)):
+        custom_model(p, model)
+        need_plan(p)
+        from .custom import validate_conversation
+        convs = []
+        for i, ex in enumerate(body.examples):
+            msgs = [{"role": m.role, "content": m.content} for m in ex.messages]
+            err = validate_conversation(msgs)
+            if err:
+                raise HTTPException(422, f"example {i}: {err}")
+            convs.append(msgs)
+        ids = db.add_tuning_examples(p.tenant, model, convs)
+        db.audit(p.tenant, p.key_id, "custom.examples", {"model": model, "count": len(ids)})
+        return {"model": model, "added": len(ids), **{k: v for k, v in custom_status(p, model).items()
+                                                      if k in ("pending_examples", "total_examples")}}
+
+    @app.post("/v1/custom-models/{model}/train", tags=["custom models"], status_code=202)
+    def train_custom_now(model: str, p=Depends(tenant_admin)):
+        custom_model(p, model)
+        need_plan(p)
+        st = custom_status(p, model)
+        if not st["pending_examples"] and not st["pending_feedback"]:
+            raise HTTPException(409, "no new examples or feedback to train on")
+        store.request_training(p.tenant, model)
+        db.audit(p.tenant, p.key_id, "custom.train", {"model": model})
+        return {"model": model, "status": "queued",
+                "note": "The new version goes live only if it beats the current one on your held-out examples."}
+
+    @app.post("/v1/custom-models/{model}/rollback", tags=["custom models"])
+    def rollback_custom(model: str, body: CustomRollbackIn, p=Depends(tenant_admin)):
+        custom_model(p, model)
+        try:
+            store.set_current(p.tenant, model, body.version)
+        except FileNotFoundError:
+            raise HTTPException(404, "version not found")
+        db.audit(p.tenant, p.key_id, "custom.rollback", {"model": model, "version": body.version})
+        return {"model": model, "current_version": body.version}
+
+    @app.delete("/v1/custom-models/{model}", tags=["custom models"])
+    def delete_custom(model: str, p=Depends(tenant_admin)):
+        custom_model(p, model)
+        store.delete(p.tenant, model)
+        n = db.delete_tuning_examples(p.tenant, model)
+        db.audit(p.tenant, p.key_id, "custom.delete", {"model": model, "examples": n})
+        return {"model": model, "deleted": True, "examples_deleted": n}
 
     @app.get("/v1/admin/llm", tags=["platform admin"])
     def llm_status(_=Depends(platform)):

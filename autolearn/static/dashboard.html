@@ -52,6 +52,9 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px s
     <div class="grid" style="margin-top:16px">
       <section class="card"><h2>Prediction projects</h2><div class="scroll"><table id="projects"></table></div></section>
       <section class="card"><h2>Knowledge bases</h2><div class="scroll"><table id="kbs"></table></div></section>
+      <section class="card"><h2>Custom models</h2><div class="scroll"><table id="customs"></table></div>
+        <p class="muted small">Upload example conversations with <code>POST /v1/custom-models/{model}/examples</code>.
+        A new version goes live only if it beats the current one on your held-out examples.</p></section>
     </div>
     <section class="card" style="margin-top:16px" id="keysCard"><h2>API keys</h2>
       <div class="row"><input id="keyName" placeholder="Key name, e.g. production app"><select id="keyRole" style="max-width:130px"><option value="client">client</option><option value="admin">admin</option></select><button id="newKey">Create key</button></div>
@@ -113,6 +116,21 @@ async function load() {
   models.forEach(m => { const o = el("option", m.id); o.value = m.id; o.title = m.description || ""; ms.appendChild(o); });
   if (prev && models.some(m => m.id === prev)) ms.value = prev;
   else if (models.some(m => m.id === "autolearn-pro")) ms.value = "autolearn-pro";
+
+  const customs = await api("/v1/custom-models");
+  table("customs", ["Model", "Live version", "Pending data", "Last result", ""], customs.map(cm => {
+    const last = cm.versions.length ? cm.versions[cm.versions.length - 1] : null;
+    let res = "—";
+    if (last && last.eval) {
+      const e = last.eval, ch = e.champion.examples_loss, cl = e.challenger.examples_loss;
+      res = el("span", `${last.version} ${last.promoted ? "promoted" : "rejected"} (loss ${ch.toFixed(2)}→${cl.toFixed(2)})`,
+               "tag " + (last.promoted ? "ok" : "warn"));
+    }
+    const b = el("button", cm.training_requested ? "Queued" : "Train now");
+    b.disabled = !isAdmin || cm.training_requested || !(cm.pending_examples + cm.pending_feedback);
+    b.onclick = async () => { try { await api(`/v1/custom-models/${cm.model}/train`, {method: "POST"}); load(); } catch (e) { alert(e.message); } };
+    return [cm.model, cm.current_version || "standard", `${fmt(cm.pending_examples)} examples, ${fmt(cm.pending_feedback)} feedback`, res, b];
+  }));
 
   const kbs = await api("/v1/knowledge");
   table("kbs", ["Knowledge base", "Documents", "Chunks"], kbs.map(k => [k.name, fmt(k.documents), fmt(k.chunks)]));

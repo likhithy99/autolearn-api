@@ -72,7 +72,7 @@ class Engine:
         self.model.load_state_dict(ckpt["model"])
         self.model.to(self.device).eval()
         self.tok = Tok(str(model_dir / "tokenizer.json"))
-        self.lock = threading.Lock()  # one generation at a time per device
+        self.lock = threading.RLock()  # one generation at a time per device
         self.version = model_dir.name
         self.model_id = "autolearn-llm"
 
@@ -85,11 +85,19 @@ class Engine:
         self = cls.__new__(cls)
         self.device = torch.device(device)
         self.model, self.config, self.tok = load_open_model(model_dir, device)
-        self.lock = threading.Lock()
+        from .lora import add_lora
+        add_lora(self.model)  # inactive until a customer's custom adapter is applied
+        self.model.to(self.device)
+        self.lock = threading.RLock()
         man = read_manifest(Path(model_dir))
         self.model_id = man.get("id", Path(model_dir).name)
         self.version = man.get("repo", "").split("/")[-1].lower() or "open"
         return self
+
+    @property
+    def supports_adapters(self) -> bool:
+        from .lora import has_lora
+        return has_lora(self.model)
 
     # ---------------------------------------------------------------- core --
     @torch.no_grad()
@@ -133,7 +141,7 @@ class Engine:
 
     def stream(self, prompt_ids: list[int], max_tokens: int = 256, temperature: float = 0.7, top_p: float = 0.9,
                top_k: int = 50, repetition_penalty: float = 1.1, stop: list[str] | None = None,
-               seed: int | None = None) -> Iterator[dict]:
+               seed: int | None = None, adapter: dict | None = None) -> Iterator[dict]:
         """Yields {'delta': str} chunks, then a final {'finish_reason', 'prompt_tokens', 'completion_tokens'}."""
         max_tokens = max(1, min(max_tokens, self.config.block_size - 1))
         keep = self.config.block_size - max_tokens
@@ -142,6 +150,10 @@ class Engine:
         stop_ids = {i for i in (self.tok.end, self.tok.eos) if i is not None}
         out_ids, text_sent, finish = [], "", "length"
         with self.lock:
+            if self.supports_adapters and getattr(self, "_loaded_adapter", 0) is not adapter:
+                from .lora import set_adapter
+                set_adapter(self.model, adapter)  # this customer's custom model, or the base model
+                self._loaded_adapter = adapter
             for tid in self._sample_ids(prompt_ids, max_tokens, temperature, top_p, top_k, repetition_penalty,
                                         stop_ids, seed):
                 out_ids.append(tid)

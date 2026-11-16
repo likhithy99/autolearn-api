@@ -72,14 +72,20 @@ class ChatTokenizer:
         if system and not any(m["role"] == "system" for m in messages):
             messages = [{"role": "system", "content": system}] + list(messages)
         ids = [self.bos] if self.bos is not None else []
+        mask = [0] * len(ids)
         for m in messages:
             content = m["content"]
             if isinstance(content, list):  # OpenAI content parts
                 content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-            ids += self._turn(m["role"], content or "")
+            head, body, tail = self._turn(m["role"], content or "")
+            train = int(m["role"] == "assistant")  # loss only on assistant replies (+ their end token)
+            ids += head + body + [self.end] + tail
+            mask += [0] * len(head) + [train] * (len(body) + 1) + [0] * len(tail)
         if add_generation_prompt:
-            ids += self._header("assistant")
-        return ids, [0] * len(ids)
+            h = self._header("assistant")
+            ids += h
+            mask += [0] * len(h)
+        return ids, mask
 
     def _header(self, role: str) -> list[int]:
         if self.fmt == "chatml":
@@ -90,7 +96,7 @@ class ChatTokenizer:
     def _turn(self, role: str, content: str) -> list[int]:
         body = self.encode(content.strip() if self.fmt == "llama3" else content)
         tail = self.t.encode("\n", add_special_tokens=False).ids if self.fmt == "chatml" else []
-        return self._header(role) + body + [self.end] + tail
+        return self._header(role), body, tail
 
 
 # -------------------------------------------------------------------- model --

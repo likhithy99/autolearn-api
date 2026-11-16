@@ -59,7 +59,37 @@ If your organisation opts in (`PATCH /v1/settings {"train_opt_in": true}`), rati
 are used to fine-tune the model. A new version goes live only if it beats the current one on
 held-out examples. **Your data is never used for training unless you opt in.**
 
-## 3. Knowledge bases (answers from your documents)
+## 3. Your own custom model (pro and enterprise plans)
+
+Teach `autolearn-pro` your company's facts, tone and formats. Your training data shapes **only your
+model**; no other customer's model is affected.
+
+```bash
+# 1. upload example conversations, each ending with the ideal answer
+curl -X POST $BASE/v1/custom-models/autolearn-pro/examples -H "X-API-Key: $ADMIN_KEY" \
+  -H 'Content-Type: application/json' -d '{"examples": [
+    {"messages": [{"role": "user", "content": "What is your refund window?"},
+                  {"role": "assistant", "content": "You can return unworn shoes within 45 days of delivery."}]}]}'
+
+# 2. train now (it also trains automatically as examples and feedback accumulate)
+curl -X POST $BASE/v1/custom-models/autolearn-pro/train -H "X-API-Key: $ADMIN_KEY"
+
+# 3. check versions and their evaluation results
+curl $BASE/v1/custom-models/autolearn-pro -H "X-API-Key: $ADMIN_KEY"
+```
+
+Keep using `model="autolearn-pro"` in your requests: once a version passes evaluation, your requests are
+served by it automatically and the response's `model` shows e.g. `autolearn-pro:custom-v2`.
+
+* **Learns from feedback too:** if you opt in (`PATCH /v1/settings {"train_opt_in": true}`), your 👍/👎 ratings
+  and corrections on `autolearn-pro` answers become training data for your custom model.
+* **Quality gate:** a new version goes live only if it beats the current one on held-out examples and
+  doesn't lose general ability (checked on a fixed set of everyday questions).
+* **Undo:** `POST /v1/custom-models/autolearn-pro/rollback {"version": "v1"}`, or `{"version": null}` to go back
+  to the standard model. `DELETE /v1/custom-models/autolearn-pro` erases your adapters and examples.
+* Tip: 20–200 varied examples work best; phrase questions the way your users do.
+
+## 4. Knowledge bases (answers from your documents)
 
 ```bash
 curl -X POST $BASE/v1/knowledge/policies/documents -H "X-API-Key: $ADMIN_KEY" \
@@ -75,7 +105,7 @@ Re-uploading a document with the same `id` replaces it. Delete one with
 Grounded chat answers include `citations`. Unless you set `temperature`, grounded answers use 0.2 so they stick
 closely to your documents.
 
-## 4. Predictions on your own data (AutoML)
+## 5. Predictions on your own data (AutoML)
 
 ```python
 from autolearn.client import AutoLearn
@@ -93,7 +123,7 @@ al.feedback("churn", out["predictions"][0]["prediction_id"], actual="yes")
   `GET /v1/projects/{p}/events` to see what it did and why.
 * Roll back any time with `POST /v1/projects/{p}/models/{version}/promote`.
 
-## 5. Content moderation
+## 6. Content moderation
 
 ```bash
 curl -X POST $BASE/v1/moderations -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
@@ -102,7 +132,7 @@ curl -X POST $BASE/v1/moderations -H "X-API-Key: $KEY" -H 'Content-Type: applica
 
 Apply it automatically to chat with `PUT /v1/settings/moderation {"moderation": "flag" | "block" | "off"}`.
 
-## 6. Errors and limits
+## 7. Errors and limits
 
 | Code | Meaning | What to do |
 |---|---|---|
@@ -117,9 +147,10 @@ Apply it automatically to chat with `PUT /v1/settings/moderation {"moderation": 
 
 Every response carries an `X-Request-ID` header. Include it when contacting support.
 
-## 7. Data and privacy
+## 8. Data and privacy
 
 * Your data is isolated from other customers at every layer: keys, projects, documents, models and logs.
 * Deleting a project or document erases its data and models.
 * Chat logs are kept for a limited retention period (30 days by default) and then deleted automatically.
-* Training on your data happens only with explicit opt-in.
+* Training on your data happens only with explicit opt-in (or when you upload examples for your custom
+  model), and only ever changes your own custom model.

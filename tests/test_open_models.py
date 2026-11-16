@@ -124,3 +124,52 @@ def test_api_serves_open_model(tmp_path, qwen_dir, monkeypatch):
         r = c.post("/v1/chat/completions", headers=h, json={"model": "gpt-9", "messages": [
             {"role": "user", "content": "x"}]})
         assert r.status_code == 404 and "model_not_found" in r.text
+
+
+def test_custom_model_per_tenant(tmp_path, qwen_dir):
+    from autolearn.api import create_app
+    from autolearn.config import Settings
+    from autolearn.llm.custom import train_custom
+    s = Settings(data_dir=tmp_path / "data", admin_key="adm", learn_interval=3600, start_learner=False,
+                 open_models_dir=qwen_dir.parent)
+    app = create_app(s)
+    with TestClient(app) as c:
+        def tenant(name, plan):
+            t = c.post("/v1/admin/tenants", headers={"X-API-Key": "adm"}, json={"name": name, "plan": plan}).json()
+            return t["tenant_id"], {"Authorization": f"Bearer {t['admin_key']['api_key']}"}
+        acme_id, acme = tenant("acme", "pro")
+        _, other = tenant("other", "pro")
+        _, free = tenant("freebie", "free")
+        ask = {"model": "tiny-open", "messages": [{"role": "user", "content": "the cat"}], "max_tokens": 8,
+               "temperature": 0, "seed": 0}
+        base = c.post("/v1/chat/completions", headers=acme, json=ask).json()
+        assert base["model"] == "tiny-open:tiny-open"
+
+        conv = lambda: {"messages": [{"role": "user", "content": "the cat"},
+                                     {"role": "assistant", "content": "paris is in france."}]}
+        assert c.post("/v1/custom-models/tiny-open/examples", headers=free,
+                      json={"examples": [conv()]}).status_code == 402
+        bad = {"examples": [{"messages": [{"role": "user", "content": "x"}, {"role": "user", "content": "y"}]}]}
+        assert c.post("/v1/custom-models/tiny-open/examples", headers=acme, json=bad).status_code == 422
+        r = c.post("/v1/custom-models/tiny-open/examples", headers=acme, json={"examples": [conv() for _ in range(12)]})
+        assert r.status_code == 201 and r.json()["pending_examples"] == 12
+        assert c.post("/v1/custom-models/tiny-open/train", headers=acme).status_code == 202
+
+        engine = app.state.llm.resolve("tiny-open")
+        out = train_custom(engine, app.state.db, app.state.adapters, acme_id, steps=60, lr=5e-3, anchor_n=2,
+                           anchor_tokens=8, tolerance=10.0)
+        assert out["promoted"], out["eval"]
+        assert out["eval"]["challenger"]["examples_loss"] < out["eval"]["champion"]["examples_loss"]
+        st = c.get("/v1/custom-models/tiny-open", headers=acme).json()
+        assert st["current_version"] == "v1" and st["pending_examples"] == 0 and not st["training_requested"]
+
+        tuned = c.post("/v1/chat/completions", headers=acme, json=ask).json()
+        assert tuned["model"] == "tiny-open:custom-v1"
+        assert tuned["choices"][0]["message"]["content"] != base["choices"][0]["message"]["content"]
+        # another company is unaffected: still the exact base model
+        assert c.post("/v1/chat/completions", headers=other, json=ask).json()["choices"] == base["choices"]
+
+        assert c.post("/v1/custom-models/tiny-open/rollback", headers=acme, json={"version": None}).status_code == 200
+        assert c.post("/v1/chat/completions", headers=acme, json=ask).json()["choices"] == base["choices"]
+        assert c.post("/v1/custom-models/tiny-open/rollback", headers=acme, json={"version": "v9"}).status_code == 404
+        assert c.delete("/v1/custom-models/tiny-open", headers=acme).json()["examples_deleted"] == 12

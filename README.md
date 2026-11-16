@@ -208,6 +208,13 @@ python -m autolearn.llm.open_models add Qwen/Qwen2.5-7B-Instruct --name autolear
 python -m autolearn.llm.open_models list
 ```
 
+**Custom models per customer** (`autolearn/llm/custom.py`, `lora.py`): each company gets its own LoRA
+adapter on `autolearn-pro`, trained from the examples it uploads (`POST /v1/custom-models/{model}/examples`)
+and its opted-in feedback. A new version is promoted only if it beats the current one on the company's
+held-out examples without regressing on general prompts, so the model learns on its own. One base model in
+memory serves every company: the right adapter is applied per request. Worker:
+`python -m autolearn.llm.custom --data-dir data --open-dir models/open` (also a docker-compose service).
+
 Only add models whose licence allows commercial use, and keep their `LICENSE` file (it is downloaded with
 the weights). Customers pick a model with the standard `model` field; `GET /v1/models` lists them.
 

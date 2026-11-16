@@ -24,5 +24,16 @@ services:
     restart: unless-stopped
     depends_on: [api]
 
+  # Trains each customer's custom model (LoRA adapter on autolearn-pro) from their examples and feedback.
+  custom-trainer:
+    build: .
+    command: ["python", "-m", "autolearn.llm.custom", "--data-dir", "/data", "--open-dir", "/models/open",
+              "--interval", "300"]
+    volumes:
+      - autolearn-data:/data
+      - ./models/open:/models/open:ro
+    restart: unless-stopped
+    depends_on: [api]
+
 volumes:
   autolearn-data:
