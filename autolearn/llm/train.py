@@ -211,7 +211,7 @@ def main():
     if a.resume and (out / "last.pt").exists() and "optimizer" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer"])
     # fp16 needs loss scaling to avoid underflow; bf16/fp32 do not
-    scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda" and not torch.cuda.is_bf16_supported())
+    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and not torch.cuda.is_bf16_supported())
     raw_model = model
     if a.compile and device.type == "cuda":
         model = torch.compile(model)
