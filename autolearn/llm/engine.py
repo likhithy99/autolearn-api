@@ -74,6 +74,22 @@ class Engine:
         self.tok = Tok(str(model_dir / "tokenizer.json"))
         self.lock = threading.Lock()  # one generation at a time per device
         self.version = model_dir.name
+        self.model_id = "autolearn-llm"
+
+    @classmethod
+    def open_model(cls, model_dir: str | Path, device: str | None = None) -> "Engine":
+        """Engine for an open-weight checkpoint registered with open_models.py (Qwen2 / Llama family)."""
+        from .open_models import load_open_model, read_manifest
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+        self = cls.__new__(cls)
+        self.device = torch.device(device)
+        self.model, self.config, self.tok = load_open_model(model_dir, device)
+        self.lock = threading.Lock()
+        man = read_manifest(Path(model_dir))
+        self.model_id = man.get("id", Path(model_dir).name)
+        self.version = man.get("repo", "").split("/")[-1].lower() or "open"
+        return self
 
     # ---------------------------------------------------------------- core --
     @torch.no_grad()
@@ -123,7 +139,7 @@ class Engine:
         keep = self.config.block_size - max_tokens
         if len(prompt_ids) > keep:  # context window: drop the oldest tokens
             prompt_ids = [prompt_ids[0]] + prompt_ids[-(keep - 1):]
-        stop_ids = {self.tok.end, self.tok.eos}
+        stop_ids = {i for i in (self.tok.end, self.tok.eos) if i is not None}
         out_ids, text_sent, finish = [], "", "length"
         with self.lock:
             for tid in self._sample_ids(prompt_ids, max_tokens, temperature, top_p, top_k, repetition_penalty,
@@ -152,7 +168,8 @@ class Engine:
         return self.stream(ids, **kw)
 
     def complete_stream(self, prompt: str, **kw):
-        return self.stream([self.tok.bos] + self.tok.encode(prompt), **kw)
+        prefix = [self.tok.bos] if self.tok.bos is not None else []
+        return self.stream(prefix + self.tok.encode(prompt), **kw)
 
     def chat(self, messages: list[dict], **kw) -> dict:
         text, final = "", {}

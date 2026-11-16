@@ -29,6 +29,11 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     rope_theta: float = 10000.0
+    # Options used when loading open-weight models (Qwen2 / Llama families); defaults = our own architecture.
+    qkv_bias: bool = False
+    ffn_hidden: int | None = None
+    norm_eps: float = 1e-6
+    tie_embeddings: bool = True
 
     def to_dict(self):
         return asdict(self)
@@ -79,8 +84,8 @@ class Attention(nn.Module):
         super().__init__()
         assert c.n_embd % c.n_head == 0 and c.n_head % c.n_kv_head == 0
         self.nh, self.nkv, self.hd = c.n_head, c.n_kv_head, c.n_embd // c.n_head
-        self.wq = nn.Linear(c.n_embd, self.nh * self.hd, bias=False)
-        self.wkv = nn.Linear(c.n_embd, 2 * self.nkv * self.hd, bias=False)
+        self.wq = nn.Linear(c.n_embd, self.nh * self.hd, bias=c.qkv_bias)
+        self.wkv = nn.Linear(c.n_embd, 2 * self.nkv * self.hd, bias=c.qkv_bias)
         self.wo = nn.Linear(self.nh * self.hd, c.n_embd, bias=False)
         self.dropout = c.dropout
 
@@ -111,8 +116,7 @@ class Attention(nn.Module):
 class SwiGLU(nn.Module):
     def __init__(self, c: GPTConfig):
         super().__init__()
-        hidden = int(2 * 4 * c.n_embd / 3)
-        hidden = 64 * ((hidden + 63) // 64)
+        hidden = c.ffn_hidden or 64 * ((int(2 * 4 * c.n_embd / 3) + 63) // 64)
         self.w1 = nn.Linear(c.n_embd, hidden, bias=False)
         self.w3 = nn.Linear(c.n_embd, hidden, bias=False)
         self.w2 = nn.Linear(hidden, c.n_embd, bias=False)
@@ -125,8 +129,8 @@ class SwiGLU(nn.Module):
 class Block(nn.Module):
     def __init__(self, c: GPTConfig):
         super().__init__()
-        self.ln1, self.attn = RMSNorm(c.n_embd), Attention(c)
-        self.ln2, self.mlp = RMSNorm(c.n_embd), SwiGLU(c)
+        self.ln1, self.attn = RMSNorm(c.n_embd, c.norm_eps), Attention(c)
+        self.ln2, self.mlp = RMSNorm(c.n_embd, c.norm_eps), SwiGLU(c)
 
     def forward(self, x, cos, sin, cache=None):
         x = x + self.attn(self.ln1(x), cos, sin, cache)
@@ -140,9 +144,10 @@ class GPT(nn.Module):
         self.tok_emb = nn.Embedding(config.vocab_size, config.n_embd)
         self.drop = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList(Block(config) for _ in range(config.n_layer))
-        self.norm = RMSNorm(config.n_embd)
+        self.norm = RMSNorm(config.n_embd, config.norm_eps)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.lm_head.weight = self.tok_emb.weight  # weight tying
+        if config.tie_embeddings:
+            self.lm_head.weight = self.tok_emb.weight  # weight tying
         cos, sin = rope_tables(config.n_embd // config.n_head, config.block_size, config.rope_theta)
         self.register_buffer("rope_cos", cos, persistent=False)
         self.register_buffer("rope_sin", sin, persistent=False)

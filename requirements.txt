@@ -13,4 +13,5 @@ certifi==2026.10.23
 # on Linux/NVIDIA install the CUDA build matching your driver (see Dockerfile.gpu).
 torch==2.4.1
 tokenizers==0.23.3
+safetensors==0.8.0
 datasets==5.2.0

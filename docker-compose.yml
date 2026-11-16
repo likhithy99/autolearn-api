@@ -9,6 +9,7 @@ services:
     volumes:
       - autolearn-data:/data
       - ./models/llm:/models/llm
+      - ./models/open:/models/open:ro
     restart: unless-stopped
 
   # Fine-tunes the LLM from opted-in customer feedback and hot-swaps the API to better versions.

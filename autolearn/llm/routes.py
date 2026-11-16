@@ -73,12 +73,36 @@ class RollbackIn(BaseModel):
 
 
 class EngineHolder:
-    """Loads the CURRENT published model and hot-swaps when a new version is promoted."""
+    """Serves AutoLearn's own model (CURRENT published version, hot-swapped on promotion) plus any open-weight
+    models registered under open_models_dir. Engines load lazily on first use."""
 
-    def __init__(self, llm_dir: Path | None, device: str | None):
-        self.llm_dir, self.device = llm_dir, device
+    def __init__(self, llm_dir: Path | None, device: str | None, open_dir: Path | None = None):
+        self.llm_dir, self.device, self.open_dir = llm_dir, device, open_dir
         self._engine = None
+        self._open: dict = {}
         self._lock = threading.Lock()
+
+    def open_catalog(self) -> dict:
+        from .open_models import catalog
+        return catalog(self.open_dir)
+
+    def resolve(self, model: str | None):
+        """Engine for a requested model id ('autolearn-llm', 'autolearn-llm:v3', 'autolearn-pro', ...)."""
+        name = (model or MODEL_ID).split(":")[0]
+        if name == MODEL_ID:
+            return self.get()
+        cat = self.open_catalog()
+        if name not in cat:
+            avail = ([MODEL_ID] if self.llm_dir else []) + sorted(cat)
+            raise HTTPException(404, {"error": {"type": "invalid_request_error", "code": "model_not_found",
+                                                "message": f"The model '{model}' does not exist. "
+                                                           f"Available: {', '.join(avail)}"}})
+        with self._lock:
+            if name not in self._open:
+                from .engine import Engine
+                log.info("loading open model %s from %s", name, cat[name]["path"])
+                self._open[name] = Engine.open_model(cat[name]["path"], self.device)
+            return self._open[name]
 
     def registry(self):
         if not self.llm_dir:
@@ -101,7 +125,8 @@ class EngineHolder:
 
 def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, platform, knowledge=None,
                         moderate=None):
-    holder = EngineHolder(settings.llm_dir, settings.llm_device)
+    open_dir = getattr(settings, "open_models_dir", None) or settings.data_dir.parent / "models" / "open"
+    holder = EngineHolder(settings.llm_dir, settings.llm_device, open_dir)
     app.state.llm = holder
 
     def check_tokens(p, needed: int):
@@ -126,7 +151,7 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
 
     def run(p, kind: str, req, stream_factory, request_payload, chunk_builder, full_builder, extra=None):
         extra = extra or {}
-        engine = holder.get()
+        engine = holder.resolve(req.model)
         kw = gen_kwargs(req)
         check_tokens(p, kw["max_tokens"])
         cid = ("chatcmpl-" if kind == "chat" else "cmpl-") + uuid.uuid4().hex
@@ -151,7 +176,7 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
                     extra = {**extra, "moderation": {**extra.get("moderation", {}), "output": out_mod}}
             usage = record(p, cid, engine, kind, request_payload, text, final)
             metrics.observe("autolearn_llm_request_seconds", time.perf_counter() - t0)
-            return {**full_builder(cid, created, engine.version, text, finish, usage), **extra}
+            return {**full_builder(cid, created, engine, text, finish, usage), **extra}
 
         include_usage = bool((req.stream_options or {}).get("include_usage"))
 
@@ -159,21 +184,21 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
             text, final = "", {"finish_reason": "stop", "prompt_tokens": 0, "completion_tokens": 0}
             try:
                 if kind == "chat":
-                    yield _sse({**chunk_builder(cid, created, engine.version, {"role": "assistant", "content": ""},
+                    yield _sse({**chunk_builder(cid, created, engine, {"role": "assistant", "content": ""},
                                                 None), **extra})
                 for ev in stream_factory(engine, kw):
                     if "delta" in ev:
                         text += ev["delta"]
-                        yield _sse(chunk_builder(cid, created, engine.version, ev["delta"], None))
+                        yield _sse(chunk_builder(cid, created, engine, ev["delta"], None))
                     else:
                         final = ev
-                yield _sse(chunk_builder(cid, created, engine.version, None, final["finish_reason"]))
+                yield _sse(chunk_builder(cid, created, engine, None, final["finish_reason"]))
             finally:  # metered even if the client disconnects mid-stream
                 usage = record(p, cid, engine, kind, request_payload, text, final)
                 metrics.observe("autolearn_llm_request_seconds", time.perf_counter() - t0)
             if include_usage:
                 yield _sse({"id": cid, "object": "chat.completion.chunk" if kind == "chat" else "text_completion",
-                            "created": created, "model": f"{MODEL_ID}:{engine.version}", "choices": [],
+                            "created": created, "model": f"{engine.model_id}:{engine.version}", "choices": [],
                             "usage": usage})
             yield "data: [DONE]\n\n"
 
@@ -187,7 +212,12 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
         data = []
         if cur:
             data.append({"id": MODEL_ID, "object": "model", "created": int(time.time()), "owned_by": "autolearn",
-                         "version": cur})
+                         "version": cur, "description": "AutoLearn's own model, trained from scratch and "
+                                                        "continually improved from customer feedback"})
+        for mid, m in holder.open_catalog().items():
+            data.append({"id": mid, "object": "model", "created": int(time.time()), "owned_by": "autolearn",
+                         "version": m.get("repo", "").split("/")[-1].lower(), "description": m.get("description"),
+                         "context_window": m.get("context")})
         return {"object": "list", "data": data}
 
     @app.post("/v1/chat/completions", tags=["llm"])
@@ -212,21 +242,26 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
             db.add_usage(p.tenant, "kb_searches", 1)
             ground = grounding_message(passages) if passages else \
                 "No relevant sources were found. Say you don't know if the question needs specific facts."
-            sys_msgs = [m for m in messages if m["role"] == "system"]
-            if sys_msgs:
-                sys_msgs[0]["content"] = f"{sys_msgs[0]['content']}\n\n{ground}"
+            # Sources go right next to the question (small models follow them far more reliably than when they
+            # sit in the system prompt), and sampling is near-greedy unless the client chose a temperature.
+            last = max(i for i, m in enumerate(messages) if m["role"] == "user") if any(
+                m["role"] == "user" for m in messages) else None
+            if last is not None and isinstance(messages[last]["content"], str):
+                messages[last] = {**messages[last], "content": f"{ground}\n\nQuestion: {messages[last]['content']}"}
             else:
                 messages = [{"role": "system", "content": ground}] + messages
+            if "temperature" not in req.model_fields_set:
+                req.temperature = 0.2
             extra["citations"] = [{k: v for k, v in x.items() if k != "score"} | {"score": x["score"]}
                                   for x in passages]
 
-        def chunk(cid, created, ver, delta, finish):
+        def chunk(cid, created, eng, delta, finish):
             d = {} if delta is None else (delta if isinstance(delta, dict) else {"content": delta})
             return {"id": cid, "object": "chat.completion.chunk", "created": created,
-                    "model": f"{MODEL_ID}:{ver}", "choices": [{"index": 0, "delta": d, "finish_reason": finish}]}
+                    "model": f"{eng.model_id}:{eng.version}", "choices": [{"index": 0, "delta": d, "finish_reason": finish}]}
 
-        def full(cid, created, ver, text, finish, usage):
-            return {"id": cid, "object": "chat.completion", "created": created, "model": f"{MODEL_ID}:{ver}",
+        def full(cid, created, eng, text, finish, usage):
+            return {"id": cid, "object": "chat.completion", "created": created, "model": f"{eng.model_id}:{eng.version}",
                     "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
                                  "finish_reason": finish}], "usage": usage}
 
@@ -234,12 +269,12 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
 
     @app.post("/v1/completions", tags=["llm"])
     def completions(req: CompletionRequest, p=Depends(tenant_any)):
-        def chunk(cid, created, ver, delta, finish):
-            return {"id": cid, "object": "text_completion", "created": created, "model": f"{MODEL_ID}:{ver}",
+        def chunk(cid, created, eng, delta, finish):
+            return {"id": cid, "object": "text_completion", "created": created, "model": f"{eng.model_id}:{eng.version}",
                     "choices": [{"index": 0, "text": delta or "", "finish_reason": finish}]}
 
-        def full(cid, created, ver, text, finish, usage):
-            return {"id": cid, "object": "text_completion", "created": created, "model": f"{MODEL_ID}:{ver}",
+        def full(cid, created, eng, text, finish, usage):
+            return {"id": cid, "object": "text_completion", "created": created, "model": f"{eng.model_id}:{eng.version}",
                     "choices": [{"index": 0, "text": text, "finish_reason": finish}], "usage": usage}
 
         extra = {}

@@ -68,6 +68,7 @@ class Settings:
     cors_origins: tuple[str, ...] = ()
     llm_dir: Path | None = None
     llm_device: str | None = None
+    open_models_dir: Path | None = None  # open-weight models served alongside ours (see llm/open_models.py)
     llm_log_retention_days: int = 30
     public_url: str = "http://localhost:8000"
     stripe_secret_key: str | None = None
@@ -86,6 +87,8 @@ class Settings:
             cors_origins=tuple(o for o in os.environ.get("AUTOLEARN_CORS_ORIGINS", "").split(",") if o),
             llm_dir=Path(os.environ["AUTOLEARN_LLM_DIR"]).resolve() if os.environ.get("AUTOLEARN_LLM_DIR") else None,
             llm_device=os.environ.get("AUTOLEARN_LLM_DEVICE") or None,
+            open_models_dir=Path(os.environ["AUTOLEARN_OPEN_MODELS_DIR"]).resolve()
+            if os.environ.get("AUTOLEARN_OPEN_MODELS_DIR") else None,
             llm_log_retention_days=int(os.environ.get("AUTOLEARN_LLM_LOG_RETENTION_DAYS", "30")),
             public_url=os.environ.get("AUTOLEARN_PUBLIC_URL", "http://localhost:8000").rstrip("/"),
             stripe_secret_key=os.environ.get("STRIPE_SECRET_KEY") or None,

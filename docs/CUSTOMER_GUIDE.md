@@ -24,7 +24,7 @@ Python, using the official OpenAI SDK:
 from openai import OpenAI
 client = OpenAI(base_url="https://api.yourdomain.com/v1", api_key="al_cli_...")
 r = client.chat.completions.create(
-    model="autolearn-llm",
+    model="autolearn-pro",
     messages=[{"role": "user", "content": "Summarise our refund policy"}],
     extra_body={"knowledge_base": "policies"},      # optional: answer from your documents
 )
@@ -37,9 +37,12 @@ JavaScript:
 import OpenAI from "openai";
 const client = new OpenAI({ baseURL: "https://api.yourdomain.com/v1", apiKey: "al_cli_..." });
 const r = await client.chat.completions.create({
-  model: "autolearn-llm", messages: [{ role: "user", content: "Hello" }], stream: true });
+  model: "autolearn-pro", messages: [{ role: "user", content: "Hello" }], stream: true });
 for await (const chunk of r) process.stdout.write(chunk.choices[0]?.delta?.content ?? "");
 ```
+
+Models (`GET /v1/models`): **`autolearn-pro`** for production use, and **`autolearn-llm`**, our own model,
+which is retrained from customer feedback.
 
 Supported parameters: `messages`, `max_tokens`, `temperature`, `top_p`, `stop`, `seed`, `stream`,
 `stream_options.include_usage`, plus the AutoLearn extras `knowledge_base`, `knowledge_top_k`,
@@ -69,7 +72,8 @@ curl -X POST $BASE/v1/knowledge/policies/search -H "X-API-Key: $KEY" \
 
 Re-uploading a document with the same `id` replaces it. Delete one with
 `DELETE /v1/knowledge/{kb}/documents/{id}`, or a whole base with `DELETE /v1/knowledge/{kb}`.
-Grounded chat answers include `citations`.
+Grounded chat answers include `citations`. Unless you set `temperature`, grounded answers use 0.2 so they stick
+closely to your documents.
 
 ## 4. Predictions on your own data (AutoML)
 

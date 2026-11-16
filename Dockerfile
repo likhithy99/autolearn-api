@@ -1,12 +1,12 @@
 # CPU image: API + AutoML + LLM inference (fine for small LLMs; use Dockerfile.gpu for large ones)
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 \
-    AUTOLEARN_DATA_DIR=/data AUTOLEARN_LLM_DIR=/models/llm
+    AUTOLEARN_DATA_DIR=/data AUTOLEARN_LLM_DIR=/models/llm AUTOLEARN_OPEN_MODELS_DIR=/models/open
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
 COPY autolearn ./autolearn
-RUN useradd --create-home --uid 10001 app && mkdir -p /data /models/llm && chown -R app /data /models
+RUN useradd --create-home --uid 10001 app && mkdir -p /data /models/llm /models/open && chown -R app /data /models
 USER app
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

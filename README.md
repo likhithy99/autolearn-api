@@ -36,6 +36,7 @@ python scripts/fetch_datasets.py                 # Adult Census + California Hou
 
 export AUTOLEARN_ADMIN_KEY=$(python3 -c "import secrets;print(secrets.token_urlsafe(32))")
 export AUTOLEARN_LLM_DIR=models/llm              # optional: enables the LLM endpoints
+export AUTOLEARN_OPEN_MODELS_DIR=models/open     # optional: open-weight models (see "Model lineup")
 .venv/bin/uvicorn autolearn.main:app --port 8000
 # interactive API docs: http://localhost:8000/docs
 ```
@@ -191,6 +192,25 @@ HellaSwag, ARC-Easy and ARC-Challenge by answer log-likelihood. Random guessing 
 > [docs/SCALING.md](docs/SCALING.md) for the size / data / compute / cost table and how to run the
 > same code on a GPU cluster.
 
+## Model lineup
+
+| Model id | What it is | Best for |
+|---|---|---|
+| `autolearn-pro` | Qwen2.5-1.5B-Instruct (Apache-2.0), served on AutoLearn's own transformer engine | Production chat, drafting, code, answers from your knowledge bases |
+| `autolearn-llm` | AutoLearn's own model, trained from scratch here and continually improved from opted-in feedback | Experimentation; grows with the training campaigns |
+
+Open-weight models run on the same engine as ours: Qwen2 and Llama-family weights are mapped straight onto
+`autolearn/llm/model.py` (`autolearn/llm/open_models.py`). A test checks the result against an independent
+reference implementation, and the chat format against the model's official template. Add another model:
+
+```bash
+python -m autolearn.llm.open_models add Qwen/Qwen2.5-7B-Instruct --name autolearn-max   # needs ~16GB GPU
+python -m autolearn.llm.open_models list
+```
+
+Only add models whose licence allows commercial use, and keep their `LICENSE` file (it is downloaded with
+the weights). Customers pick a model with the standard `model` field; `GET /v1/models` lists them.
+
 ## API reference (summary)
 
 Full interactive docs are at `/docs`. Authenticate with `X-API-Key: <key>` or
@@ -217,6 +237,7 @@ not trained or busy · `413` body too large · `422` validation · `429` rate li
 | `AUTOLEARN_DATA_DIR` | `./data` | SQLite DB + AutoML models |
 | `AUTOLEARN_LEARN_INTERVAL` | `15` | seconds between autonomous learner checks |
 | `AUTOLEARN_LLM_DIR` | unset (LLM off) | versioned LLM registry |
+| `AUTOLEARN_OPEN_MODELS_DIR` | `<data dir>/../models/open` | open-weight models served next to ours |
 | `AUTOLEARN_LLM_DEVICE` | auto (cuda > mps > cpu) | inference device |
 | `AUTOLEARN_LLM_LOG_RETENTION_DAYS` | `30` | completion-log retention, enforced by the continual worker |
 | `AUTOLEARN_MAX_BODY_BYTES` | 20 MB | request size limit |

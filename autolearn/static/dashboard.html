@@ -42,7 +42,7 @@ pre{white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px s
       <section class="card"><h2>Plan &amp; usage this month</h2><div id="usage"></div>
         <div class="row" style="margin-top:12px"><button id="portal">Manage billing</button><span></span></div></section>
       <section class="card"><h2>Chat playground</h2>
-        <div class="row"><select id="kbSel"><option value="">No knowledge base</option></select></div>
+        <div class="row"><select id="modelSel"></select><select id="kbSel"><option value="">No knowledge base</option></select></div>
         <textarea id="prompt" style="margin-top:8px" placeholder="Ask something…"></textarea>
         <div class="row" style="margin-top:8px"><button class="primary" id="send">Send</button><span class="muted small" id="chatMeta"></span></div>
         <pre id="answer" class="hidden"></pre>
@@ -108,6 +108,12 @@ async function load() {
     return [p.name, p.task, s, m, score];
   }));
 
+  const models = (await api("/v1/models")).data;
+  const ms = $("modelSel"), prev = ms.value; ms.replaceChildren();
+  models.forEach(m => { const o = el("option", m.id); o.value = m.id; o.title = m.description || ""; ms.appendChild(o); });
+  if (prev && models.some(m => m.id === prev)) ms.value = prev;
+  else if (models.some(m => m.id === "autolearn-pro")) ms.value = "autolearn-pro";
+
   const kbs = await api("/v1/knowledge");
   table("kbs", ["Knowledge base", "Documents", "Chunks"], kbs.map(k => [k.name, fmt(k.documents), fmt(k.chunks)]));
   const sel = $("kbSel"); sel.replaceChildren(el("option", "No knowledge base"));
@@ -145,7 +151,8 @@ $("send").onclick = async () => {
   const q = $("prompt").value.trim(); if (!q) return;
   $("send").disabled = true; $("answer").classList.remove("hidden"); $("answer").textContent = "…"; $("rateRow").classList.add("hidden"); $("rated").textContent = "";
   try {
-    const body = {messages: [{role: "user", content: q}], max_tokens: 200};
+    const body = {messages: [{role: "user", content: q}], max_tokens: 300};
+    if ($("modelSel").value) body.model = $("modelSel").value;
     if ($("kbSel").value) body.knowledge_base = $("kbSel").value;
     const r = await api("/v1/chat/completions", {method: "POST", body: JSON.stringify(body)});
     lastCompletion = r.id;
