@@ -52,6 +52,11 @@ state_path = find("state.json")
 state = json.load(open(state_path)) if state_path else {"session": 0, "stage": "pretrain"}
 CK = os.path.dirname(state_path) if state_path else None
 print("campaign", cfg, "\nstate", state, flush=True)
+EXPECT_SESSION = None  # __EXPECT_SESSION__
+if EXPECT_SESSION is not None and state["session"] != EXPECT_SESSION:
+    # Kaggle mounted an older checkpoint version (new upload still processing): stop before spending GPU time
+    print("STALE_CHECKPOINT", json.dumps({"mounted": state["session"], "expected": EXPECT_SESSION}), flush=True)
+    raise SystemExit(0)
 
 # package: source files are embedded below by campaign.py (Kaggle mangles uploaded archives/folders)
 EMBEDDED = {}  # __EMBEDDED_PACKAGE__

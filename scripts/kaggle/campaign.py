@@ -63,6 +63,7 @@ def upload_dataset(path: Path, ref: str, title: str, message: str):
         sh(["datasets", "version", "-p", str(path), "-m", message, "-q"])
     else:
         sh(["datasets", "create", "-p", str(path), "-q"])  # private by default
+    time.sleep(60)  # status can still report the previous version as ready right after a push
     for _ in range(120):  # wait until processed so the next kernel mounts the new version
         st = sh(["datasets", "status", ref], check=False).lower()
         if "ready" in st:
@@ -156,8 +157,9 @@ def main():
             src = src.replace(m, v)
         return src
 
-    def build_kernel(use_prep: bool):
-        (kdir / "session.py").write_text(embed("session.py"))
+    def build_kernel(use_prep: bool, session: int):
+        (kdir / "session.py").write_text(embed("session.py", {"EXPECT_SESSION = None  # __EXPECT_SESSION__":
+                                                              f"EXPECT_SESSION = {session}"}))
         (kdir / "kernel-metadata.json").write_text(json.dumps({
             "id": kernel_ref, "title": "autolearn-train", "code_file": "session.py", "language": "python",
             "kernel_type": "script", "is_private": True, "enable_gpu": True, "enable_internet": True,
@@ -205,7 +207,7 @@ def main():
                 use_prep = prep_for(state["session"]) == "ready"
             log(f"pushing session {state['session']} (stage={state['stage']}, "
                 f"step={state.get('step', 0)}/{max_steps}, prepared data: {'yes' if use_prep else 'no'})")
-            build_kernel(use_prep)
+            build_kernel(use_prep, state["session"])
             out = sh(["kernels", "push", "-p", str(kdir)], check=False)
             if "error" in out.lower() or "quota" in out.lower():
                 log("push failed (likely weekly GPU quota):", out[:300], f"- retrying in {a.quota_wait // 3600}h")
@@ -236,6 +238,10 @@ def main():
         new_state = json.loads((tmp / "state.json").read_text()) if (tmp / "state.json").exists() else None
         if st != "complete" or not new_state or new_state["session"] <= state["session"]:
             tail = logs[0].read_text()[-2000:] if logs else raw
+            if "STALE_CHECKPOINT" in tail:
+                log(f"session {state['session']} mounted a stale checkpoint version; re-pushing in 10 min")
+                time.sleep(600)
+                continue
             log(f"session {state['session']} did not finish cleanly ({st}). Tail:\n{tail}")
             if "quota" in tail.lower() or "gpu" in raw:
                 time.sleep(a.quota_wait)
