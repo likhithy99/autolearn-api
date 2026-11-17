@@ -1,5 +1,7 @@
 # AutoLearn
 
+[![tests](https://github.com/likhithy99/autolearn-api/actions/workflows/tests.yml/badge.svg)](https://github.com/likhithy99/autolearn-api/actions/workflows/tests.yml)
+
 A self-hosted AI platform you can sell as an API: an **OpenAI-compatible** API (the official `openai`
 SDKs work unchanged) plus AutoML, behind one set of API keys, billing plans and usage meters.
 
@@ -12,6 +14,7 @@ SDKs work unchanged) plus AutoML, behind one set of API keys, billing plans and 
 | Answers from your documents (RAG) | `/v1/knowledge/*`, `knowledge_base` on chat | hybrid keyword + semantic search, citations |
 | **Custom model per customer** | `/v1/custom-models/*` | LoRA adapter trained on the customer's examples and feedback; promoted only if it beats the current one |
 | Learning from feedback | `/v1/feedback` | opt-in; feeds the custom models and AutoLearn's own model |
+| Batch jobs | `/v1/files`, `/v1/batches` | OpenAI Batch API: up to 50,000 requests per file, resumable, same metering |
 | Content moderation | `/v1/moderations` | own classifier (Civil Comments), off/flag/block per tenant |
 | AutoML predictions | `/v1/projects/*` | trains, monitors drift, **retrains itself** from feedback |
 | Accounts and billing | `/v1/keys`, `/v1/me`, Stripe checkout and portal, `/dashboard` | roles, quotas, rate limits, audit log |
@@ -36,6 +39,18 @@ engine written in this repo (`autolearn/llm/`), with no `transformers` dependenc
                               SQLite (WAL) · model files on disk · versioned LLM registry
 ```
 
+## Engineering highlights
+
+| Piece | What it does | Where |
+|---|---|---|
+| Inference engine | GPT/Llama/Qwen-style transformer, KV cache, loads open-weight safetensors directly (no `transformers`) | `autolearn/llm/model.py`, `open_models.py` |
+| Continuous batching | concurrent requests share each forward pass; per-slot KV buffers, per-row RoPE and masks, GQA without K/V copies (1.9× throughput at 4 concurrent requests) | `autolearn/llm/batching.py` |
+| Constrained decoding | a character-level JSON pushdown automaton filters tokens so output is always valid JSON | `autolearn/llm/constrained.py` |
+| Per-customer fine-tuning | LoRA adapters trained with self-distillation replay and DPO; a held-out gate blocks versions that lose general ability | `autolearn/llm/lora.py`, `custom.py` |
+| Hybrid retrieval | BM25 (SQLite FTS5) + a BERT embedding encoder written from scratch, merged by reciprocal rank fusion | `autolearn/knowledge.py`, `llm/embeddings.py` |
+| Pretraining from scratch | streaming data pipeline, BPE tokenizer, mixed-precision DDP training across free Kaggle GPU sessions with checkpoint hand-off and CPU-side data prep | `autolearn/llm/data.py`, `train.py`, `scripts/kaggle/` |
+| Multi-tenant SaaS | API keys and roles, plans, quotas, rate limits, usage metering, Stripe billing, audit log, Prometheus metrics | `autolearn/api.py`, `billing.py`, `db.py` |
+
 ## Quick start
 
 **Live demo for prospects:** start the server, then `python examples/demo.py --admin-key <key>`. It walks through
@@ -46,7 +61,7 @@ usage metering, using the official OpenAI SDK.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 python scripts/fetch_datasets.py                 # Adult Census + California Housing demo data
-.venv/bin/pytest -q                              # 32 tests
+.venv/bin/pytest -q                              # 67 tests
 
 export AUTOLEARN_ADMIN_KEY=$(python3 -c "import secrets;print(secrets.token_urlsafe(32))")
 export AUTOLEARN_LLM_DIR=models/llm              # optional: enables the LLM endpoints
@@ -289,3 +304,9 @@ HTTPS, or a Cloudflare Tunnel from your Mac) and the launch checklist.
   model, data and compute (see docs/SCALING.md).
 * Legal: terms of service, privacy policy, DPA, dataset attribution (FineWeb-Edu ODC-By, SmolTalk
   Apache-2.0, UCI Adult CC BY 4.0).
+
+## License
+
+Copyright (c) 2026 likhithy99. All rights reserved. The source is published for review and evaluation; contact
+the author for commercial use. Third-party models and datasets keep their own licenses (Qwen2.5: Apache-2.0,
+bge-small: MIT, FineWeb-Edu: ODC-By, SmolTalk: Apache-2.0).
