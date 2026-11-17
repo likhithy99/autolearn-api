@@ -113,3 +113,22 @@ def test_subscription_upgrade_and_cancellation(client):
 def test_success_page_before_payment(client):
     r = client.get("/billing/success?session_id=cs_unpaid")
     assert r.status_code == 402
+
+
+def test_public_demo_keys(tmp_path):
+    from fastapi.testclient import TestClient
+    from autolearn.api import create_app
+    from autolearn.config import Settings
+    off = create_app(Settings(data_dir=tmp_path / "a", admin_key="adm", learn_interval=3600, start_learner=False))
+    with TestClient(off) as c:
+        assert c.post("/demo/key").status_code == 404
+        assert "demoBtn" not in c.get("/").text
+    on = create_app(Settings(data_dir=tmp_path / "b", admin_key="adm", learn_interval=3600, start_learner=False,
+                             public_demo=True))
+    with TestClient(on) as c:
+        assert "demoBtn" in c.get("/").text
+        keys = [c.post("/demo/key", headers={"X-Forwarded-For": "1.2.3.4"}) for _ in range(4)]
+        assert [r.status_code for r in keys] == [200, 200, 200, 429]
+        me = c.get("/v1/me", headers={"X-API-Key": keys[0].json()["api_key"]}).json()
+        assert me["plan"] == "free"
+        assert c.post("/demo/key", headers={"X-Forwarded-For": "5.6.7.8"}).status_code == 200

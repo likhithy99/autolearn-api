@@ -72,6 +72,7 @@ class Settings:
     llm_batch_size: int | None = None    # continuous batching slots per model; None = 8 on CUDA, off elsewhere
     llm_log_retention_days: int = 30
     public_url: str = "http://localhost:8000"
+    public_demo: bool = False  # anyone can get a free-plan key from the landing page (for public demos)
     stripe_secret_key: str | None = None
     stripe_webhook_secret: str | None = None
     stripe_prices: dict | None = None         # plan -> Stripe price id
@@ -93,6 +94,7 @@ class Settings:
             llm_batch_size=int(os.environ["AUTOLEARN_LLM_BATCH"]) if os.environ.get("AUTOLEARN_LLM_BATCH") else None,
             llm_log_retention_days=int(os.environ.get("AUTOLEARN_LLM_LOG_RETENTION_DAYS", "30")),
             public_url=os.environ.get("AUTOLEARN_PUBLIC_URL", "http://localhost:8000").rstrip("/"),
+            public_demo=os.environ.get("AUTOLEARN_PUBLIC_DEMO", "") == "1",
             stripe_secret_key=os.environ.get("STRIPE_SECRET_KEY") or None,
             stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET") or None,
             stripe_prices={p: os.environ[f"STRIPE_PRICE_{p.upper()}"] for p in PLANS

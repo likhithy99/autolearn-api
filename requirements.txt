@@ -14,4 +14,5 @@ certifi==2026.10.23
 torch==2.4.1
 tokenizers==0.23.3
 safetensors==0.8.0
+huggingface_hub==2.4.0  # model downloads (open_models.py add)
 datasets==5.2.0

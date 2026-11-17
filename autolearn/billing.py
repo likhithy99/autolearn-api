@@ -135,6 +135,52 @@ def register_billing_routes(app, settings, db, new_key, tenant_admin):
         log.info("provisioned tenant %s on plan %s", tid, plan)
         return tid
 
+    # ---------------------------------------------------------- public demo --
+    demo_hits: dict[str, list[float]] = {}
+    DEMO_PER_IP_HOUR, DEMO_PER_DAY = 3, 500
+
+    @app.post("/demo/key", include_in_schema=False)
+    def demo_key(request: Request):
+        """Instant free-plan key for visitors of a public demo (AUTOLEARN_PUBLIC_DEMO=1)."""
+        if not getattr(settings, "public_demo", False):
+            raise HTTPException(404, "not found")
+        ip = (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "?")) \
+            .split(",")[0].strip()
+        now = time.time()
+        for k in list(demo_hits):
+            demo_hits[k] = [t for t in demo_hits[k] if now - t < 86400]
+            if not demo_hits[k]:
+                del demo_hits[k]
+        if sum(1 for t in demo_hits.get(ip, []) if now - t < 3600) >= DEMO_PER_IP_HOUR:
+            raise HTTPException(429, "demo key limit reached for your network; try again in an hour")
+        if sum(len(v) for v in demo_hits.values()) >= DEMO_PER_DAY:
+            raise HTTPException(429, "the demo has handed out its keys for today; try again tomorrow")
+        demo_hits.setdefault(ip, []).append(now)
+        tid = "t_" + secrets.token_hex(6)
+        db.create_tenant(tid, "Demo visitor", "free")
+        key = new_key(tid, "demo key", "admin")
+        db.audit(tid, "demo", "tenant.create", {"plan": "free"})
+        return {"tenant_id": tid, "api_key": key["api_key"], "plan": "free"}
+
+    DEMO_CTA = """<div class="card" style="margin:0 0 32px"><h2>Try it now</h2>
+<p class="muted">Get a free API key instantly (free plan, 200,000 tokens), then chat with the models in the console
+or call the API with the OpenAI SDK.</p><button class="btn" id="demoBtn" type="button">Get a free API key</button>
+<pre id="demoOut" style="display:none;white-space:pre-wrap;word-break:break-all"></pre></div>
+<script>
+document.getElementById("demoBtn").onclick = async (e) => {
+  e.target.disabled = true;
+  const out = document.getElementById("demoOut");
+  try {
+    const r = await fetch("/demo/key", {method: "POST"}); const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.statusText);
+    try { sessionStorage.setItem("al_key", j.api_key); } catch (_) {}
+    out.textContent = "Your key (copy it now): " + j.api_key + "\n\nOpening the console...";
+    out.style.display = "block"; setTimeout(() => { location.href = "/dashboard"; }, 2500);
+  } catch (err) { out.textContent = "Could not create a key: " + err.message; out.style.display = "block";
+    e.target.disabled = false; }
+};
+</script>"""
+
     # ------------------------------------------------------------ pricing --
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def pricing():
@@ -174,7 +220,7 @@ font-size:.85rem;margin:0 0 40px}}h3{{margin:0 0 12px}}
 </style></head><body><main><h1>AutoLearn API</h1>
 <p class="sub">Language models, embeddings and predictions that learn your business, behind one
 OpenAI-compatible API. <a href="/docs">API reference</a> · <a href="/dashboard">Customer console</a></p>
-{LANDING_FEATURES}
+{DEMO_CTA if getattr(settings, 'public_demo', False) else ''}{LANDING_FEATURES}
 <h3>Pricing</h3><div class="grid">{''.join(cards)}</div></main></body></html>"""
 
     # ------------------------------------------------------------- checkout --
