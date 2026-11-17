@@ -90,9 +90,16 @@ def pick_device(name: str = "auto") -> torch.device:
     return torch.device("cpu")
 
 
+def native_bf16() -> bool:
+    """bf16 only where the GPU has bf16 tensor cores (Ampere+, compute capability 8.0). torch.cuda.is_bf16_supported()
+    also returns True on T4/V100, where bf16 is emulated and several times slower than fp16 (measured on Kaggle T4s:
+    ~2.8k tokens/s per GPU on a 101M model)."""
+    return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
+
+
 def autocast_ctx(device):
-    if device.type == "cuda":  # bf16 on Ampere+ (A100/H100/RTX30+); fp16 on older GPUs (T4/P100/V100)
-        return torch.autocast("cuda", dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16)
+    if device.type == "cuda":  # bf16 on Ampere+ (A100/H100/RTX30+); fp16 + loss scaling on older GPUs (T4/P100/V100)
+        return torch.autocast("cuda", dtype=torch.bfloat16 if native_bf16() else torch.float16)
     return contextlib.nullcontext()  # MPS/CPU: full fp32 for numerical safety
 
 
@@ -211,7 +218,7 @@ def main():
     if a.resume and (out / "last.pt").exists() and "optimizer" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer"])
     # fp16 needs loss scaling to avoid underflow; bf16/fp32 do not
-    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and not torch.cuda.is_bf16_supported())
+    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and not native_bf16())
     raw_model = model
     if a.compile and device.type == "cuda":
         model = torch.compile(model)
@@ -250,7 +257,7 @@ def main():
                 _, loss = model(x, y)
                 loss = loss / a.accum
             scaler.scale(loss).backward()
-            loss_accum += loss.item()
+            loss_accum += loss.detach()  # no host sync per micro-step
         scaler.unscale_(optimizer)
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), a.grad_clip)
         scaler.step(optimizer)
@@ -271,7 +278,7 @@ def main():
 
         if master and (step % 10 == 0 or step == max_steps):
             dt = time.time() - t_last
-            rec = {"step": step, "loss": round(loss_accum, 4), "lr": round(cur_lr, 7),
+            rec = {"step": step, "loss": round(float(loss_accum), 4), "lr": round(cur_lr, 7),
                    "grad_norm": round(float(norm), 3), "tok_per_s": round(tokens_seen / dt),
                    "elapsed_min": round((time.time() - t_start) / 60, 2)}
             log_f.write(json.dumps(rec) + "\n")

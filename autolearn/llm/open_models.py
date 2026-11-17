@@ -212,7 +212,7 @@ def load_open_model(model_dir: str | Path, device: str, dtype: torch.dtype | Non
     c = hf_config_to_gpt(hf_cfg, man.get("context", 8192))
     if dtype is None:
         dtype = torch.float32 if device == "cpu" else (torch.bfloat16 if device != "cuda" or
-                                                       torch.cuda.is_bf16_supported() else torch.float16)
+                                                       torch.cuda.get_device_capability()[0] >= 8 else torch.float16)
     hf = {}
     for f in sorted(model_dir.glob("*.safetensors")):
         hf.update(load_file(str(f)))
