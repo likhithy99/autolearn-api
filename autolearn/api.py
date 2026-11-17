@@ -561,6 +561,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from .moderation import register_moderation_routes
     moderate = register_moderation_routes(app, settings, db, tenant_any, tenant_admin)
     from .llm.routes import register_llm_routes
-    register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, platform, knowledge, moderate)
+    handlers = register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, platform, knowledge, moderate)
+    from .batches import register_batch_routes
+    register_batch_routes(app, settings, db, tenant_any, handlers)
     return app
 

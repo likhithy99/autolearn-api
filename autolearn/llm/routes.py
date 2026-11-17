@@ -570,6 +570,10 @@ def register_llm_routes(app, settings, db, metrics, tenant_any, tenant_admin, pl
         db.log_event("__llm__", "promote", f"{body.version} manually set as current (rollback/override)")
         return {"current": body.version}
 
+    # handlers the Batch API runs offline (same validation, quotas and metering as live requests)
+    return {"/v1/chat/completions": (ChatRequest, chat_completions), "/v1/completions": (CompletionRequest, completions),
+            "/v1/embeddings": (EmbeddingRequest, embeddings)}
+
 
 def _sse(obj) -> str:
     return f"data: {json.dumps(obj)}\n\n"

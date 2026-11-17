@@ -197,3 +197,20 @@ Every response carries an `X-Request-ID` header. Include it when contacting supp
 * Chat logs are kept for a limited retention period (30 days by default) and then deleted automatically.
 * Training on your data happens only with explicit opt-in (or when you upload examples for your custom
   model), and only ever changes your own custom model.
+
+## Batch API (large offline jobs)
+
+Upload a JSONL file of requests and download the results when the job finishes. Use it to classify thousands of
+tickets or summarise a document archive overnight. The same SDK calls as OpenAI work:
+
+```python
+f = client.files.create(file=open("requests.jsonl", "rb"), purpose="batch")
+b = client.batches.create(input_file_id=f.id, endpoint="/v1/chat/completions", completion_window="24h")
+b = client.batches.retrieve(b.id)            # status, request_counts
+results = client.files.content(b.output_file_id).text   # one JSON line per request
+```
+
+Each input line is `{"custom_id": "...", "method": "POST", "url": "/v1/chat/completions", "body": {...}}`.
+Supported endpoints are `/v1/chat/completions`, `/v1/completions` and `/v1/embeddings`. A batch can hold up to
+50,000 requests in a file of up to 100 MB. Failed requests go to `error_file_id`. Batches resume automatically
+after a server restart.
