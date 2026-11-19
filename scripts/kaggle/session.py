@@ -104,12 +104,23 @@ if state["stage"] == "pretrain":
         run(f"python -m autolearn.llm.data pretrain --out /kaggle/temp/data --tokens {cfg['tokens_per_session']} "
             f"--val-tokens 3M --tokenizer {tok} --dataset {cfg['dataset']} --data-files {','.join(files)}", env,
             done_file="/kaggle/temp/data/manifest.json")
-    train_min = max(10, remaining_min() - 25)  # leave time to write outputs
-    run(f"{launcher} autolearn.llm.train --stage pretrain --preset {cfg['preset']} --data {data_dir} "
-        f"--out {WORK} --tokenizer {tok} {'--resume' if state['session'] > 0 else ''} "
-        f"--max-steps {cfg['max_steps']} --stop-after-min {train_min:.0f} --batch {cfg['batch']} "
-        f"--accum {cfg['accum']} --block {cfg['block']} --lr {cfg['lr']} --warmup {cfg['warmup']} "
-        f"--eval-every {cfg['eval_every']} --eval-iters 40", env)
+    def pretrain(compile_: bool):
+        train_min = max(10, remaining_min() - 25)  # leave time to write outputs
+        resume = "--resume" if os.path.exists(os.path.join(WORK, "last.pt")) else ""
+        run(f"{launcher} autolearn.llm.train --stage pretrain --preset {cfg['preset']} --data {data_dir} "
+            f"--out {WORK} --tokenizer {tok} {resume} {'--compile' if compile_ else ''} "
+            f"--max-steps {cfg['max_steps']} --stop-after-min {train_min:.0f} --batch {cfg['batch']} "
+            f"--accum {cfg['accum']} --block {cfg['block']} --lr {cfg['lr']} --warmup {cfg['warmup']} "
+            f"--eval-every {cfg['eval_every']} --eval-iters 40", env)
+
+    try:
+        pretrain(compile_=cfg.get("compile", True))  # torch.compile: fused kernels, typically 10-25% faster
+    except subprocess.CalledProcessError as e:
+        if not cfg.get("compile", True) or remaining_min() < 40:
+            raise
+        print(f"compiled training failed ({e}); continuing without torch.compile from the last checkpoint",
+              flush=True)
+        pretrain(compile_=False)
     ck = torch.load(os.path.join(WORK, "last.pt"), map_location="cpu", weights_only=False)
     state.update(session=k + 1, step=ck["step"], val_loss=ck["val_loss"])
     if ck["step"] >= cfg["max_steps"]:
