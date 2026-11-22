@@ -243,6 +243,12 @@ def main():
     t_last, tokens_seen = time.time(), 0
     model.train()
     step = start_step
+    bad_steps = 0  # consecutive non-finite losses
+
+    def write_progress(done=False):
+        if master:
+            (out / "progress.json").write_text(json.dumps({"stage": a.stage, "step": step, "max_steps": max_steps,
+                                                           "start_step": start_step, "done": done}))
     while step < max_steps:
         cur_lr = lr_at(step, max_steps, warmup, lr, lr * a.min_lr_ratio)
         for g in optimizer.param_groups:
@@ -270,11 +276,25 @@ def main():
         if a.time_budget_min and step == start_step + 10:
             per_step = (time.time() - t_start) / 10
             fit = start_step + int(a.time_budget_min * 60 / per_step)
+            if ddp:  # every rank must run the same number of steps, or the last gradient sync hangs
+                t = torch.tensor([fit], device=device)
+                dist.all_reduce(t, op=dist.ReduceOp.MIN)
+                fit = int(t.item())
             if fit < max_steps:
                 max_steps = max(fit, step + 1)
                 if master:
                     print(f"time budget {a.time_budget_min} min -> {max_steps} steps "
                           f"({per_step:.2f}s/step, ~{max_steps * tokens_per_step / 1e6:.0f}M tokens)", flush=True)
+
+        if step % 10 == 0:  # divergence guard (all ranks agree, so none is left waiting in a collective)
+            bad = torch.tensor([0 if torch.isfinite(loss_accum).all() else 1], device=device)
+            if ddp:
+                dist.all_reduce(bad, op=dist.ReduceOp.MAX)
+            bad_steps = bad_steps + 1 if bad.item() else 0
+            if bad_steps >= 5:
+                if master:
+                    print(json.dumps({"error": "non_finite_loss", "step": step}), flush=True)
+                raise SystemExit(3)  # caller resumes from the last good checkpoint
 
         if master and (step % 10 == 0 or step == max_steps):
             dt = time.time() - t_last
@@ -303,11 +323,13 @@ def main():
                 best_val = val
                 save_checkpoint(out / "best.pt", raw_model, cfg, step, val, meta)
             save_checkpoint(out / "last.pt", raw_model, cfg, step, val, meta, optimizer)
+            write_progress()
         if stop_now:
             if master:
                 print(json.dumps({"session_stop": True, "step": step, "of": max_steps}), flush=True)
             break
 
+    write_progress(done=step >= max_steps)
     if master:
         print(json.dumps({"done": True, "steps": step, "best_val_loss": round(best_val, 4),
                           "minutes": round((time.time() - t_start) / 60, 1)}), flush=True)
