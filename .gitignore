@@ -9,3 +9,5 @@ logs/
 *.tmp
 kaggle_campaign/
 datasets/*.csv
+.venv-export/
+exports/

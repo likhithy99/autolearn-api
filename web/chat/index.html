@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AutoLearn Chat</title>
+<meta name="description" content="Chat with language models trained from scratch on a laptop and free GPUs. Runs entirely in your browser.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f5bea'/%3E%3Cpath d='M9 22l7-13 7 13M12 17h8' stroke='white' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+:root{--bg:#ffffff;--side:#f6f6f7;--fg:#16171a;--muted:#6b6f76;--line:#e4e4e7;--bubble:#f1f1f3;--accent:#2f5bea;
+--accent-fg:#fff;--warn-bg:#fff7e6;--warn-fg:#7a4b00;--code:#f4f4f5;--shadow:0 1px 2px rgba(0,0,0,.06)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17181b;--side:#111214;--fg:#e8e8ea;
+--muted:#9a9ea6;--line:#2a2c31;--bubble:#24262b;--accent:#6b8cff;--accent-fg:#0b0c0e;--warn-bg:#2b2212;--warn-fg:#f3c77a;
+--code:#1f2125;--shadow:none}}
+:root[data-theme="dark"]{--bg:#17181b;--side:#111214;--fg:#e8e8ea;--muted:#9a9ea6;--line:#2a2c31;--bubble:#24262b;
+--accent:#6b8cff;--accent-fg:#0b0c0e;--warn-bg:#2b2212;--warn-fg:#f3c77a;--code:#1f2125;--shadow:none}
+*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+button,select,textarea{font:inherit;color:inherit}a{color:var(--accent)}
+.app{display:grid;grid-template-columns:260px 1fr;height:100dvh}
+aside{background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.brand{padding:16px 16px 8px;font-weight:650;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
+.brand small{font-weight:500;color:var(--muted)}
+.newchat{margin:8px 12px;padding:9px 12px;border:1px solid var(--line);background:var(--bg);border-radius:10px;
+cursor:pointer;text-align:left;box-shadow:var(--shadow)}
+.newchat:hover{border-color:var(--accent)}
+.convs{flex:1;overflow:auto;padding:4px 8px}
+.conv{display:flex;align-items:center;gap:4px;border-radius:8px;padding:7px 8px;cursor:pointer;color:var(--fg);font-size:14px}
+.conv:hover,.conv.on{background:var(--bubble)}
+.conv span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conv button{border:0;background:none;color:var(--muted);cursor:pointer;opacity:0;padding:0 4px}
+.conv:hover button{opacity:1}
+.sidefoot{padding:12px 16px;border-top:1px solid var(--line);font-size:13px;color:var(--muted);display:grid;gap:6px}
+.sidefoot a{color:var(--muted)}
+main{display:flex;flex-direction:column;min-width:0;min-height:0}
+header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line)}
+.menu{display:none;border:0;background:none;font-size:20px;cursor:pointer;padding:2px 6px}
+select{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px 10px;max-width:60vw}
+.status{margin-left:auto;font-size:13px;color:var(--muted);white-space:nowrap}
+.about-btn{border:1px solid var(--line);background:none;border-radius:8px;padding:5px 10px;cursor:pointer;font-size:13px;
+white-space:nowrap;flex:none}
+.about-btn .long{display:inline}
+#log{flex:1;overflow:auto;padding:24px 16px}
+.wrap{max-width:760px;margin:0 auto}
+.msg{display:flex;margin:0 0 18px}
+.msg.user{justify-content:flex-end}
+.msg .b{white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere}
+.msg.user .b{background:var(--bubble);padding:10px 14px;border-radius:16px;max-width:85%}
+.msg.bot .b{padding:2px 2px;max-width:100%}
+.msg.bot .meta{font-size:12px;color:var(--muted);margin-top:6px}
+.b code{background:var(--code);padding:1px 5px;border-radius:5px;font-size:.92em}
+.b pre{background:var(--code);padding:10px 12px;border-radius:8px;overflow:auto;white-space:pre}
+.cursor::after{content:"▍";animation:blink 1s steps(1) infinite;color:var(--muted)}
+@keyframes blink{50%{opacity:0}}
+.empty{text-align:center;padding:8vh 0 0}
+.empty h1{font-size:28px;margin:0 0 6px;letter-spacing:-.02em}
+.empty p{color:var(--muted);margin:0 auto 22px;max-width:520px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+.chip{border:1px solid var(--line);background:var(--bg);border-radius:999px;padding:7px 13px;cursor:pointer;font-size:14px}
+.chip:hover{border-color:var(--accent)}
+.composer{padding:10px 16px 14px}
+.box{max-width:760px;margin:0 auto;display:flex;gap:8px;align-items:flex-end;border:1px solid var(--line);border-radius:16px;
+padding:8px 8px 8px 14px;background:var(--bg);box-shadow:var(--shadow)}
+.box:focus-within{border-color:var(--accent)}
+textarea{flex:1;border:0;outline:0;resize:none;background:transparent;max-height:200px;padding:6px 0}
+.send{border:0;background:var(--accent);color:var(--accent-fg);border-radius:10px;width:38px;height:38px;cursor:pointer;
+font-size:17px;flex:none}
+.send:disabled{opacity:.4;cursor:default}
+.note{max-width:760px;margin:8px auto 0;text-align:center;font-size:12px;color:var(--muted)}
+.loadbar{max-width:760px;margin:0 auto 10px;display:none}
+.loadbar .t{font-size:13px;color:var(--muted);margin-bottom:6px}
+.loadbar .track{height:6px;background:var(--bubble);border-radius:6px;overflow:hidden}
+.loadbar .fill{height:100%;width:0;background:var(--accent);transition:width .2s}
+.err{max-width:760px;margin:0 auto 10px;background:var(--warn-bg);color:var(--warn-fg);border-radius:10px;padding:10px 12px;
+font-size:14px;display:none}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--bg);color:var(--fg);max-width:640px;width:calc(100% - 32px);
+padding:22px 24px}
+dialog::backdrop{background:rgba(0,0,0,.4)}
+dialog h2{margin:0 0 10px;font-size:20px}dialog h3{margin:18px 0 6px;font-size:16px}
+dialog table{border-collapse:collapse;width:100%;font-size:14px}
+dialog td{border-top:1px solid var(--line);padding:6px 8px 6px 0;vertical-align:top}
+dialog td:first-child{color:var(--muted);width:42%}
+dialog .close{float:right;border:0;background:none;font-size:20px;cursor:pointer;color:var(--muted)}
+dialog p{margin:6px 0}
+@media (max-width:760px){
+.app{grid-template-columns:1fr}
+aside{position:fixed;inset:0 auto 0 0;width:270px;z-index:5;transform:translateX(-100%);transition:transform .2s}
+aside.open{transform:none;box-shadow:0 0 0 100vmax rgba(0,0,0,.35)}
+.menu{display:block}.status{display:none}.about-btn .long{display:none}select{min-width:0;flex:1}
+#log{padding:16px 12px}.composer{padding:8px 12px 12px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside id="side">
+    <div class="brand">AutoLearn <small>Chat</small></div>
+    <button class="newchat" id="newchat">＋ New chat</button>
+    <div class="convs" id="convs"></div>
+    <div class="sidefoot">
+      <span>Runs entirely in your browser. Nothing you type leaves your device.</span>
+      <a href="https://github.com/likhithy99/autolearn-api" target="_blank" rel="noopener">Source code on GitHub</a>
+    </div>
+  </aside>
+  <main>
+    <header>
+      <button class="menu" id="menu" aria-label="Conversations">☰</button>
+      <select id="model" aria-label="Model"></select>
+      <button class="about-btn" id="aboutBtn">About<span class="long"> the models</span></button>
+      <span class="status" id="status"></span>
+    </header>
+    <div id="log"><div class="wrap" id="msgs"></div></div>
+    <div class="composer">
+      <div class="loadbar" id="loadbar"><div class="t" id="loadtext">Downloading model…</div><div class="track"><div class="fill" id="fill"></div></div></div>
+      <div class="err" id="err"></div>
+      <div class="box">
+        <textarea id="input" rows="1" placeholder="Message AutoLearn…" aria-label="Message"></textarea>
+        <button class="send" id="send" aria-label="Send">↑</button>
+      </div>
+      <div class="note">Small models trained from scratch: they write fluently but often get facts wrong. Don't rely on them.</div>
+    </div>
+  </main>
+</div>
+
+<dialog id="about">
+  <button class="close" id="aboutClose" aria-label="Close">×</button>
+  <h2>About these models</h2>
+  <p>Every model here was <b>trained from scratch</b>: the tokenizer, the pretraining and the chat fine-tuning,
+  with no borrowed weights. They use the same architecture as Meta's Llama (RMSNorm, rotary positions, grouped-query
+  attention, SwiGLU), written in PyTorch and trained on a MacBook and on free Kaggle GPUs.</p>
+  <p>The model runs on your own device through WebAssembly (int8, <a href="https://huggingface.co/docs/transformers.js" target="_blank" rel="noopener">transformers.js</a>),
+  so there is no server and your messages never leave your browser.</p>
+  <div id="modelFacts"></div>
+  <h3>For scale</h3>
+  <p>These models have 40–100 million parameters. Commercial assistants have hundreds of billions, thousands of times
+  more, and were trained on far more text. Expect fluent writing with unreliable facts.</p>
+</dialog>
+
+<script type="module">
+const MODELS = [
+  { id: "Likhith003/autolearn-40m-chat", name: "AutoLearn 40M", download: "58 MB", available: true,
+    facts: [["Parameters", "40 million (8 layers, 512 wide, 8 heads / 4 KV heads)"],
+            ["Pretraining", "2.9 billion tokens of FineWeb-Edu (educational web text), 180,000 steps"],
+            ["Chat tuning", "SmolTalk, 100,000 conversations"],
+            ["Trained on", "Apple M3 MacBook (16 GB), about 9 days"],
+            ["Validation loss", "3.55 pretraining · 1.48 chat"],
+            ["Context", "512 tokens"]] },
+  { id: "Likhith003/autolearn-101m-chat", name: "AutoLearn 101M", download: "~110 MB", available: false,
+    facts: [["Parameters", "101 million (12 layers, 768 wide)"],
+            ["Pretraining", "4 billion tokens of FineWeb-Edu on 2× T4 GPUs (Kaggle)"],
+            ["Status", "Chat tuning in progress, coming soon"]] },
+];
+const params = new URLSearchParams(location.search);
+const local = params.get("local");  // dev only: ?local=/models/  serves exports from a local folder
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (_) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} },
+};
+
+// ---------- state
+let convs = store.get("al_convs", []);
+let cur = null, busy = false, ready = null, botEl = null, botText = "";
+const available = MODELS.filter((m) => m.available);
+let model = available.find((m) => m.id === store.get("al_model")) || available[0];
+
+// ---------- model picker + about
+for (const m of MODELS) {
+  const o = document.createElement("option");
+  o.value = m.id; o.disabled = !m.available;
+  o.textContent = m.name + (m.available ? "" : " (coming soon)");
+  $("model").append(o);
+}
+$("model").value = model.id;
+$("model").onchange = () => { model = MODELS.find((m) => m.id === $("model").value); store.set("al_model", model.id); ready = null; load(); };
+function renderFacts() {
+  $("modelFacts").innerHTML = MODELS.map((m) => `<h3>${esc(m.name)}${m.available ? "" : " · coming soon"}</h3><table>${
+    m.facts.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}${
+    m.available ? `<tr><td>Weights</td><td><a href="https://huggingface.co/${m.id}" target="_blank" rel="noopener">huggingface.co/${m.id}</a></td></tr>` : ""}</table>`).join("");
+}
+$("aboutBtn").onclick = () => { renderFacts(); $("about").showModal(); };
+$("aboutClose").onclick = () => $("about").close();
+
+// ---------- worker
+const worker = new Worker(new URL("worker.js" + (local ? `?local=${encodeURIComponent(local)}` : ""), import.meta.url), { type: "module" });
+let waiters = {};
+worker.onmessage = ({ data }) => {
+  if (data.type === "progress") {
+    $("loadbar").style.display = "block";
+    const pct = Math.min(100, (100 * data.loaded) / data.total);
+    $("fill").style.width = pct.toFixed(1) + "%";
+    $("loadtext").textContent = `Downloading ${model.name} (${(data.loaded / 1e6).toFixed(0)} / ${(data.total / 1e6).toFixed(0)} MB). Only the first time; it's cached after that.`;
+  } else if (data.type === "ready") {
+    $("loadbar").style.display = "none"; setStatus("Ready · runs on your device");
+    waiters.ready && waiters.ready();
+  } else if (data.type === "token") {
+    botText += data.text; paintBot(true);
+  } else if (data.type === "done") {
+    const words = botText.trim().split(/\s+/).filter(Boolean).length;
+    finishBot(`${model.name} · ${data.seconds.toFixed(1)} s${data.trimmed ? " · older messages trimmed to fit its memory" : ""}`);
+    setStatus(`Ready · ${words ? (words / data.seconds).toFixed(0) + " words/s" : ""}`);
+  } else if (data.type === "error") {
+    showErr("Something went wrong: " + data.message);
+    if (busy) finishBot("stopped by an error");
+    waiters.fail && waiters.fail(new Error(data.message));
+  }
+};
+function load() {
+  if (ready) return ready;
+  setStatus("Loading model…");
+  ready = new Promise((res, rej) => { waiters = { ready: res, fail: rej }; });
+  ready.catch(() => { ready = null; });
+  worker.postMessage({ type: "load", model: { id: model.id } });
+  return ready;
+}
+
+// ---------- conversations
+function save() { store.set("al_convs", convs.slice(0, 50)); }
+function newChat() { cur = null; renderMsgs(); renderConvs(); $("input").focus(); closeSide(); }
+function open(id) { cur = convs.find((c) => c.id === id) || null; renderMsgs(); renderConvs(); closeSide(); }
+function renderConvs() {
+  $("convs").innerHTML = "";
+  for (const c of convs) {
+    const d = document.createElement("div");
+    d.className = "conv" + (cur && c.id === cur.id ? " on" : "");
+    d.innerHTML = `<span>${esc(c.title)}</span><button aria-label="Delete" title="Delete">×</button>`;
+    d.onclick = () => open(c.id);
+    d.querySelector("button").onclick = (e) => {
+      e.stopPropagation(); convs = convs.filter((x) => x.id !== c.id); save();
+      if (cur && cur.id === c.id) cur = null; renderMsgs(); renderConvs();
+    };
+    $("convs").append(d);
+  }
+}
+const SUGGEST = ["What is photosynthesis?", "Write a short poem about the ocean.", "Give me three tips for a job interview.",
+                 "What is the capital of France?", "Explain gravity in simple words."];
+function renderMsgs() {
+  const box = $("msgs"); box.innerHTML = "";
+  if (!cur || !cur.messages.length) {
+    box.innerHTML = `<div class="empty"><h1>What can I help with?</h1><p>You're chatting with a small language model
+      trained from scratch, running on your own device. Try one of these:</p><div class="chips">${
+      SUGGEST.map((s) => `<button class="chip">${esc(s)}</button>`).join("")}</div></div>`;
+    box.querySelectorAll(".chip").forEach((b) => (b.onclick = () => { $("input").value = b.textContent; send(); }));
+    return;
+  }
+  for (const m of cur.messages) addMsg(m.role, m.content, m.meta);
+  scroll();
+}
+function addMsg(role, text, meta) {
+  const d = document.createElement("div");
+  d.className = "msg " + (role === "user" ? "user" : "bot");
+  d.innerHTML = `<div><div class="b"></div>${role === "user" ? "" : `<div class="meta">${esc(meta || "")}</div>`}</div>`;
+  const b = d.querySelector(".b");
+  if (role === "user") b.textContent = text; else b.innerHTML = fmt(text);
+  $("msgs").append(d);
+  return d;
+}
+
+// ---------- chat
+async function send() {
+  const text = $("input").value.trim();
+  if (busy) { worker.postMessage({ type: "stop" }); return; }
+  if (!text) return;
+  hideErr();
+  if (!cur) { cur = { id: Date.now().toString(36), title: text.slice(0, 48), messages: [] }; convs.unshift(cur); }
+  if (!cur.messages.length) $("msgs").innerHTML = "";
+  cur.messages.push({ role: "user", content: text }); save(); renderConvs();
+  addMsg("user", text);
+  $("input").value = ""; grow();
+  busy = true; setSend();
+  botText = ""; botEl = addMsg("assistant", ""); paintBot(true); scroll();
+  try { await load(); } catch (e) { return; }
+  worker.postMessage({ type: "generate", model: { id: model.id },
+    messages: cur.messages.map(({ role, content }) => ({ role, content })),
+    params: { max_new_tokens: 256, temperature: 0.5 } });
+}
+function paintBot(live) {
+  if (!botEl) return;
+  const b = botEl.querySelector(".b");
+  b.innerHTML = fmt(botText); b.classList.toggle("cursor", live);
+  scroll(true);
+}
+function finishBot(meta) {
+  if (!botEl) return;
+  paintBot(false);
+  botEl.querySelector(".meta").textContent = meta;
+  if (cur) { cur.messages.push({ role: "assistant", content: botText.trim(), meta }); save(); }
+  botEl = null; busy = false; setSend();
+}
+
+// ---------- helpers
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
+function fmt(s) {  // tiny, safe markdown: code blocks, inline code, bold
+  return esc(s).replace(/```[\w-]*\n?([\s\S]*?)(```|$)/g, (_, c) => `<pre>${c}</pre>`)
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+}
+function scroll(soft) { const l = $("log"); if (!soft || l.scrollHeight - l.scrollTop - l.clientHeight < 160) l.scrollTop = l.scrollHeight; }
+function setStatus(t) { $("status").textContent = t; }
+function setSend() { $("send").textContent = busy ? "■" : "↑"; $("send").setAttribute("aria-label", busy ? "Stop" : "Send"); }
+function showErr(t) { $("err").textContent = t; $("err").style.display = "block"; }
+function hideErr() { $("err").style.display = "none"; }
+function grow() { const t = $("input"); t.style.height = "auto"; t.style.height = Math.min(200, t.scrollHeight) + "px"; }
+function closeSide() { $("side").classList.remove("open"); }
+
+$("send").onclick = send;
+$("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+$("input").addEventListener("input", grow);
+$("newchat").onclick = newChat;
+$("menu").onclick = (e) => { e.stopPropagation(); $("side").classList.toggle("open"); };
+document.addEventListener("click", (e) => { if (!$("side").contains(e.target)) closeSide(); });
+
+renderConvs(); renderMsgs(); load();
+</script>
+</body>
+</html>
