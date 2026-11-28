@@ -138,17 +138,20 @@ aside.open{transform:none;box-shadow:0 0 0 100vmax rgba(0,0,0,.35)}
 
 <script type="module">
 const MODELS = [
-  { id: "Likhith003/autolearn-40m-chat", name: "AutoLearn 40M", download: "58 MB", available: true,
+  { id: "Likhith003/autolearn-101m-chat", name: "AutoLearn 101M", download: "127 MB", available: true,
+    facts: [["Parameters", "101 million (12 layers, 768 wide, 12 heads / 4 KV heads)"],
+            ["Pretraining", "4 billion tokens of FineWeb-Edu (educational web text), 30,518 steps"],
+            ["Chat tuning", "SmolTalk, 200,000 conversations"],
+            ["Trained on", "2× NVIDIA T4 on free Kaggle sessions, about 45 GPU-hours"],
+            ["Validation loss", "3.10 pretraining · 1.24 chat"],
+            ["Context", "1,024 tokens"]] },
+  { id: "Likhith003/autolearn-40m-chat", name: "AutoLearn 40M", hint: " (faster)", download: "58 MB", available: true,
     facts: [["Parameters", "40 million (8 layers, 512 wide, 8 heads / 4 KV heads)"],
             ["Pretraining", "2.9 billion tokens of FineWeb-Edu (educational web text), 180,000 steps"],
             ["Chat tuning", "SmolTalk, 100,000 conversations"],
             ["Trained on", "Apple M3 MacBook (16 GB), about 9 days"],
             ["Validation loss", "3.55 pretraining · 1.48 chat"],
             ["Context", "512 tokens"]] },
-  { id: "Likhith003/autolearn-101m-chat", name: "AutoLearn 101M", download: "~110 MB", available: false,
-    facts: [["Parameters", "101 million (12 layers, 768 wide)"],
-            ["Pretraining", "4 billion tokens of FineWeb-Edu on 2× T4 GPUs (Kaggle)"],
-            ["Status", "Chat tuning in progress, coming soon"]] },
 ];
 const params = new URLSearchParams(location.search);
 const local = params.get("local");  // dev only: ?local=/models/  serves exports from a local folder
@@ -168,7 +171,7 @@ let model = available.find((m) => m.id === store.get("al_model")) || available[0
 for (const m of MODELS) {
   const o = document.createElement("option");
   o.value = m.id; o.disabled = !m.available;
-  o.textContent = m.name + (m.available ? "" : " (coming soon)");
+  o.textContent = m.name + (m.available ? (m.hint || "") : " (coming soon)");
   $("model").append(o);
 }
 $("model").value = model.id;
